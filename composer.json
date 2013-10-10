@@ -1,0 +1,13 @@
+{
+    "name": "shoptet/libphutil",
+    "type": "library",
+    "description": "libphutil is a collection of utility classes for PHP.",
+    "homepage": "https://github.com/facebook/libphutil",
+    "license": "Apache-2.0",
+    "authors": [
+        {
+            "name": "Evan Priestley",
+            "email": "mail@example.com"
+        }
+    ]
+}
