@@ -320,7 +320,7 @@ final class HTTPSFuture extends BaseHTTPFuture {
         curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, true);
       }
 
-      curl_setopt($curl, CURLOPT_SSLVERSION, 0);
+      curl_setopt($curl, CURLOPT_SSLVERSION, 3);
     } else {
       $curl = $this->handle;
 
