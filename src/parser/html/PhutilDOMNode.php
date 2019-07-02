@@ -65,12 +65,12 @@ final class PhutilDOMNode extends Phobject {
     return $this;
   }
 
-  public function newRawString() {
+  public function getRawString() {
     $raw = array();
     $raw[] = $this->rawHead;
 
     foreach ($this->getChildren() as $child) {
-      $raw[] = $child->newRawString();
+      $raw[] = $child->getRawString();
     }
 
     $raw[] = $this->rawTail;
@@ -124,7 +124,7 @@ final class PhutilDOMNode extends Phobject {
       // Otherwise, this is some other tag. Convert it into a content
       // node.
 
-      $raw_string = $child->newRawString();
+      $raw_string = $child->getRawString();
 
       $nodes[] = id(new self())
         ->setContent($raw_string)
@@ -134,14 +134,14 @@ final class PhutilDOMNode extends Phobject {
     return $this->mergeContentNodes($nodes);
   }
 
-  public function newRawContentString() {
+  public function getRawContentString() {
     $content_node = $this->selectChildrenWithTags(array());
 
     if (!$content_node) {
       return '';
     }
 
-    return head($content_node)->newRawString();
+    return head($content_node)->getRawString();
   }
 
   public function mergeContent() {
@@ -189,7 +189,7 @@ final class PhutilDOMNode extends Phobject {
 
       $parts = array();
       foreach ($item as $content_node) {
-        $parts[] = $content_node->newRawString();
+        $parts[] = $content_node->getRawString();
       }
       $parts = implode('', $parts);
 
