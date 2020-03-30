@@ -14,14 +14,15 @@
  * @task  config    Configuring File Queries
  * @task  exec      Executing the File Query
  * @task  internal  Internal
- * @group filesystem
  */
-final class FileFinder {
+final class FileFinder extends Phobject {
 
   private $root;
   private $exclude = array();
   private $paths = array();
+  private $name = array();
   private $suffix = array();
+  private $nameGlobs = array();
   private $type;
   private $generateChecksums = false;
   private $followSymlinks;
@@ -49,8 +50,16 @@ final class FileFinder {
   /**
    * @task config
    */
+  public function withName($name) {
+    $this->name[] = $name;
+    return $this;
+  }
+
+  /**
+   * @task config
+   */
   public function withSuffix($suffix) {
-    $this->suffix[] = '*.'.$suffix;
+    $this->suffix[] = $suffix;
     return $this;
   }
 
@@ -86,6 +95,15 @@ final class FileFinder {
     return $this;
   }
 
+  public function getGenerateChecksums() {
+    return $this->generateChecksums;
+  }
+
+  public function withNameGlob($pattern) {
+    $this->nameGlobs[] = $pattern;
+    return $this;
+  }
+
   /**
    * @task config
    * @param string Either "php", "shell", or the empty string.
@@ -99,32 +117,75 @@ final class FileFinder {
    * @task internal
    */
   public function validateFile($file) {
-    $matches = (count($this->suffix) == 0);
-    foreach ($this->suffix as $curr_suffix) {
-      if (fnmatch($curr_suffix, $file)) {
-        $matches = true;
-        break;
+
+    if ($this->name) {
+      $matches = false;
+      foreach ($this->name as $curr_name) {
+        if (basename($file) === $curr_name) {
+          $matches = true;
+          break;
+        }
+      }
+
+      if (!$matches) {
+        return false;
       }
     }
-    if (!$matches) {
-      return false;
+
+    if ($this->nameGlobs) {
+      $name = basename($file);
+
+      $matches = false;
+      foreach ($this->nameGlobs as $glob) {
+        $glob = addcslashes($glob, '\\');
+        if (fnmatch($glob, $name)) {
+          $matches = true;
+          break;
+        }
+      }
+
+      if (!$matches) {
+        return false;
+      }
     }
 
-    $matches = (count($this->paths) == 0);
-    foreach ($this->paths as $path) {
-      if (fnmatch($path, $this->root.'/'.$file)) {
-        $matches = true;
-        break;
+    if ($this->suffix) {
+      $matches = false;
+      foreach ($this->suffix as $suffix) {
+        $suffix = addcslashes($suffix, '\\?*');
+        $suffix = '*.'.$suffix;
+        if (fnmatch($suffix, $file)) {
+          $matches = true;
+          break;
+        }
+      }
+
+      if (!$matches) {
+        return false;
+      }
+    }
+
+    if ($this->paths) {
+      $matches = false;
+      foreach ($this->paths as $path) {
+        if (fnmatch($path, $this->root.'/'.$file)) {
+          $matches = true;
+          break;
+        }
+      }
+
+      if (!$matches) {
+        return false;
       }
     }
 
     $fullpath = $this->root.'/'.ltrim($file, '/');
     if (($this->type == 'f' && is_dir($fullpath))
         || ($this->type == 'd' && !is_dir($fullpath))) {
-      $matches = false;
+      return false;
     }
 
-    return $matches;
+    return true;
   }
 
   /**
@@ -138,7 +199,7 @@ final class FileFinder {
     }
     foreach ($found as $filename) {
       // Only exclude files whose names match relative to the root.
-      if ($dir == "") {
+      if ($dir == '') {
         $matches = true;
         foreach ($this->exclude as $exclude_path) {
           if (fnmatch(ltrim($exclude_path, './'), $dir.$filename)) {
@@ -173,21 +234,24 @@ final class FileFinder {
 
     if (!is_dir($this->root) || !is_readable($this->root)) {
       throw new Exception(
-        "Invalid FileFinder root directory specified ('{$this->root}'). ".
-        "Root directory must be a directory, be readable, and be specified ".
-        "with an absolute path.");
+        pht(
+          "Invalid %s root directory specified ('%s'). Root directory ".
+          "must be a directory, be readable, and be specified with an ".
+          "absolute path.",
+          __CLASS__,
+          $this->root));
     }
 
-    if ($this->forceMode == "shell") {
+    if ($this->forceMode == 'shell') {
       $php_mode = false;
-    } else if ($this->forceMode == "php") {
+    } else if ($this->forceMode == 'php') {
       $php_mode = true;
     } else {
       $php_mode = (phutil_is_windows() || !Filesystem::binaryExists('find'));
     }
 
     if ($php_mode) {
-      $files = $this->getFiles("");
+      $files = $this->getFiles('');
     } else {
       $args = array();
       $command = array();
@@ -208,12 +272,20 @@ final class FileFinder {
         $args[] = $this->type;
       }
 
+      if ($this->name) {
+        $command[] = $this->generateList('name', $this->name, 'name');
+      }
+
       if ($this->suffix) {
-        $command[] = $this->generateList('name', $this->suffix);
+        $command[] = $this->generateList('name', $this->suffix, 'suffix');
       }
 
       if ($this->paths) {
         $command[] = $this->generateList('path', $this->paths);
+      }
+
+      if ($this->nameGlobs) {
+        $command[] = $this->generateList('name', $this->nameGlobs);
       }
 
       $command[] = '-print0';
@@ -231,9 +303,16 @@ final class FileFinder {
       $files = explode("\0", $stdout);
 
       // On OSX/BSD, find prepends a './' to each file.
-      for ($i = 0; $i < count($files); $i++) {
-        if (substr($files[$i], 0, 2) == './') {
-          $files[$i] = substr($files[$i], 2);
+      foreach ($files as $key => $file) {
+        // When matching directories, we can get "." back in the result set,
+        // but this isn't an interesting result.
+        if ($file == '.') {
+          unset($files[$key]);
+          continue;
+        }
+
+        if (substr($files[$key], 0, 2) == './') {
+          $files[$key] = substr($files[$key], 2);
         }
       }
     }
@@ -257,13 +336,30 @@ final class FileFinder {
   /**
    * @task internal
    */
-  private function generateList($flag, array $items) {
-    $items = array_map('escapeshellarg', $items);
+  private function generateList(
+    $flag,
+    array $items,
+    $mode = 'glob') {
+
     foreach ($items as $key => $item) {
-      $items[$key] = '-'.$flag.' '.$item;
+      // If the mode is not "glob" mode, we're going to escape glob characters
+      // in the pattern. Otherwise, we escape only backslashes.
+      if ($mode === 'glob') {
+        $item = addcslashes($item, '\\');
+      } else {
+        $item = addcslashes($item, '\\*?');
+      }
+
+      if ($mode === 'suffix') {
+        $item = '*.'.$item;
+      }
+
+      $item = (string)csprintf('%s %s', '-'.$flag, $item);
+
+      $items[$key] = $item;
     }
+
     $items = implode(' -o ', $items);
     return '"(" '.$items.' ")"';
   }
 }
-

@@ -27,11 +27,8 @@
  * @task build Graph Construction
  * @task cycle Cycle Detection
  * @task explore Graph Exploration
- *
- * @group util
- * @stable
  */
-abstract class AbstractDirectedGraph {
+abstract class AbstractDirectedGraph extends Phobject {
 
 
   private $knownNodes   = array();
@@ -78,8 +75,11 @@ abstract class AbstractDirectedGraph {
   final public function addNodes(array $nodes) {
     if ($this->graphLoaded) {
       throw new Exception(
-        "Call addNodes() before calling loadGraph(). You can not add more ".
-        "nodes once you have loaded the graph.");
+        pht(
+          'Call %s before calling %s. You can not add more nodes '.
+          'once you have loaded the graph.',
+          __FUNCTION__.'()',
+          'loadGraph()'));
     }
 
     $this->knownNodes += $nodes;
@@ -91,15 +91,12 @@ abstract class AbstractDirectedGraph {
   }
 
   /**
-   * Utility function to get a list of topographically sorted nodes out of a
-   * graph.
+   * Get the nodes in topological order.
    *
-   * This could be useful for example to figure out what order you can safely
-   * apply dependencies.
-   *
-   * Note this will loop indefinitely if the graph has a cycle.
+   * This method requires the graph be acyclic. For graphs which may contain
+   * cycles, see @{method:getNodesInRoughTopologicalOrder}.
    */
-  final public function getTopographicallySortedNodes() {
+  final public function getNodesInTopologicalOrder() {
     $sorted = array();
     $nodes = $this->getNodes();
 
@@ -145,6 +142,78 @@ abstract class AbstractDirectedGraph {
   }
 
   /**
+   * Get the nodes in topological order, or some roughly similar order if
+   * the graph contains cycles.
+   *
+   * This method will return an ordering for cyclic graphs. The method will
+   * attempt to make it look like a topological ordering, but since cyclic
+   * graphs have no complete toplogical ordering, you might get anything.
+   *
+   * If you know the graph is acyclic and want an actual topological order,
+   * use @{method:getNodesInTopologicalOrder}.
+   */
+  final public function getNodesInRoughTopologicalOrder() {
+    $nodes = $this->getNodes();
+    $edges = $this->loadEdges($nodes);
+
+    $results = array();
+    $completed = array();
+
+    $depth = 0;
+    while (true) {
+      $next = array();
+
+      foreach ($nodes as $node) {
+        if (isset($completed[$node])) {
+          continue;
+        }
+
+        $capable = true;
+        foreach ($edges[$node] as $edge) {
+          if (!isset($completed[$edge])) {
+            $capable = false;
+            break;
+          }
+        }
+
+        if ($capable) {
+          $next[] = $node;
+        }
+      }
+
+      if (count($next) === 0) {
+        // No more nodes to traverse; we are deadlocked if the number
+        // of completed nodes is less than the total number of nodes.
+        break;
+      }
+
+      foreach ($next as $node) {
+        $results[] = array(
+          'node' => $node,
+          'depth' => $depth,
+          'cycle' => false,
+        );
+
+        $completed[$node] = true;
+      }
+
+      $depth++;
+    }
+
+    foreach ($nodes as $node) {
+      if (!isset($completed[$node])) {
+        $results[] = array(
+          'node' => $node,
+          'depth' => $depth,
+          'cycle' => true,
+        );
+      }
+    }
+
+    return $results;
+  }
+
+  /**
    * Load the graph, building it out so operations can be performed on it. This
    * constructs the graph level-by-level, calling @{method:loadEdges} to
    * expand the graph at each stage until it is complete.
@@ -175,8 +244,10 @@ abstract class AbstractDirectedGraph {
       foreach ($load as $node) {
         if (!isset($new_nodes[$node]) || !is_array($new_nodes[$node])) {
           throw new Exception(
-            "loadEdges() must return an edge list array for each provided ".
-            "node, or the cycle detection algorithm may not terminate.");
+            pht(
+              '%s must return an edge list array for each provided '.
+              'node, or the cycle detection algorithm may not terminate.',
+              'loadEdges()'));
         }
       }
 
@@ -219,13 +290,17 @@ abstract class AbstractDirectedGraph {
   final public function detectCycles($node) {
     if (!$this->graphLoaded) {
       throw new Exception(
-        "Call loadGraph() to build the graph out before calling ".
-        "detectCycles().");
+        pht(
+          'Call %s to build the graph out before calling %s.',
+          'loadGraph()',
+          __FUNCTION__.'()'));
     }
     if (!isset($this->knownNodes[$node])) {
       throw new Exception(
-        "The node '{$node}' is not known. Call addNodes() to seed the graph ".
-        "with nodes.");
+        pht(
+          "The node '%s' is not known. Call %s to seed the graph with nodes.",
+          $node,
+          'addNodes()'));
     }
 
     $visited = array();

@@ -3,22 +3,32 @@
 /**
  * Simple event store for service calls, so they can be printed to stdout or
  * displayed in a debug console.
- *
- * @group util
  */
-final class PhutilServiceProfiler {
+final class PhutilServiceProfiler extends Phobject {
 
   private static $instance;
+
   private $listeners = array();
   private $events = array();
   private $logSize = 0;
-  private $discardMode = false;
 
-  private function __construct() {
-  }
+  private $discardMode = false;
+  private $collectStackTraces;
+  private $zeroTime;
+
+  private function __construct() {}
 
   public function enableDiscardMode() {
     $this->discardMode = true;
+  }
+
+  public function setCollectStackTraces($collect_stack_traces) {
+    $this->collectStackTraces = $collect_stack_traces;
+    return $this;
+  }
+
+  public function getCollectStackTraces() {
+    return $this->collectStackTraces;
   }
 
   public static function getInstance() {
@@ -30,6 +40,13 @@ final class PhutilServiceProfiler {
 
   public function beginServiceCall(array $data) {
     $data['begin'] = microtime(true);
+
+    if ($this->collectStackTraces) {
+      $trace = debug_backtrace();
+      $trace = PhutilErrorHandler::formatStacktrace($trace);
+      $data['trace'] = $trace;
+    }
+
     $id = $this->logSize++;
     $this->events[$id] = $data;
     foreach ($this->listeners as $listener) {
@@ -60,8 +77,8 @@ final class PhutilServiceProfiler {
   }
 
   public static function installEchoListener() {
-    $instance = PhutilServiceProfiler::getInstance();
-    $instance->addListener(array('PhutilServiceProfiler', 'echoListener'));
+    $instance = self::getInstance();
+    $instance->addListener(array(__CLASS__, 'echoListener'));
   }
 
   public static function echoListener($type, $id, $data) {
@@ -104,22 +121,41 @@ final class PhutilServiceProfiler {
           $desc = '$ '.$data['command'];
           break;
         case 'conduit':
-          $desc = $data['method'].'() <bytes = '.$data['size'].'>';
+          if (isset($data['size'])) {
+            $desc  = $data['method'].'() ';
+            $desc .= pht('<bytes = %s>', new PhutilNumber($data['size']));
+          } else {
+            $desc = $data['method'].'()';
+          }
           break;
         case 'http':
-          $desc = $data['uri'];
+          if (isset($data['proxy'])) {
+            $proxy = phutil_censor_credentials($data['proxy']);
+          } else {
+            $proxy = null;
+          }
+
+          $uri = phutil_censor_credentials($data['uri']);
+
+          if (strlen($proxy)) {
+            $desc = "{$proxy} >> {$uri}";
+          } else {
+            $desc = $uri;
+          }
+
           break;
         case 'lint':
           $desc = $data['linter'];
           if (isset($data['paths'])) {
-            $desc .= ' <paths = '.count($data['paths']).'>';
+            $desc .= ' '.pht('<paths = %s>', phutil_count($data['paths']));
           }
           break;
         case 'lock':
           $desc = $data['name'];
           break;
         case 'event':
-          $desc = $data['kind'].' <listeners = '.$data['count'].'>';
+          $desc  = $data['kind'].' ';
+          $desc .= pht('<listeners = %s>', new PhutilNumber($data['count']));
           break;
         case 'ldap':
           $call = idx($data, 'call', '?');
@@ -145,16 +181,42 @@ final class PhutilServiceProfiler {
           break;
       }
     } else if ($is_end) {
-      $desc = number_format((int)(1000000 * $data['duration'])).' us';
+      $desc = pht(
+        '%s us',
+        new PhutilNumber((int)(1000000 * $data['duration'])));
     }
+
+    $instance = self::getInstance();
+    if (!$instance->zeroTime) {
+      $instance->zeroTime = microtime(true);
+    }
+    $elapsed = microtime(true) - $instance->zeroTime;
 
     $console = PhutilConsole::getConsole();
     $console->writeLog(
-      "%s [%s] <%s> %s\n",
+      "%s [%s] (+%s) <%s> %s\n",
       $mark,
       $id,
+      pht('%s', new PhutilNumber((int)(1000 * $elapsed))),
       $type,
-      $desc);
+      self::escapeProfilerStringForDisplay($desc));
   }
+
+  private static function escapeProfilerStringForDisplay($string) {
+    // Convert tabs and newlines to spaces and collapse blocks of whitespace,
+    // most often formatting in queries.
+    $string = preg_replace('/\s{2,}/', ' ', $string);
+
+    // Replace sequences of binary characters with printable text. We allow
+    // some printable characters to appear in between unprintable characters
+    // to try to collapse the entire run.
+    $string = preg_replace(
+      '/[\x00-\x1F\x7F-\xFF](.{0,12}[\x00-\x1F\x7F-\xFF])*/',
+      '<...binary data...>',
+      $string);
+
+    return $string;
+  }
+
 
 }

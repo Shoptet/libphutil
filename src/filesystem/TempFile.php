@@ -13,14 +13,13 @@
  * @task  create    Creating a Temporary File
  * @task  config    Configuration
  * @task  internal  Internals
- *
- * @group filesystem
  */
-final class TempFile {
+final class TempFile extends Phobject {
 
   private $dir;
   private $file;
   private $preserve;
+  private $destroyed = false;
 
 /* -(  Creating a Temporary File  )------------------------------------------ */
 
@@ -31,15 +30,24 @@ final class TempFile {
    * @param string? Filename hint. This is useful if you intend to edit the
    *                file with an interactive editor, so the user's editor shows
    *                "commit-message" instead of "p3810hf-1z9b89bas".
+   * @param string? Root directory to hold the file. If omitted, the system
+   *                temporary directory (often "/tmp") will be used by default.
    * @task create
    */
-  public function __construct($filename = null) {
-    $this->dir = Filesystem::createTemporaryDirectory();
+  public function __construct($filename = null, $root_directory = null) {
+    $this->dir = Filesystem::createTemporaryDirectory(
+      '',
+      0700,
+      $root_directory);
     if ($filename === null) {
       $this->file = tempnam($this->dir, getmypid().'-');
     } else {
       $this->file = $this->dir.'/'.$filename;
     }
+
+    // If we fatal (e.g., call a method on NULL), destructors are not called.
+    // Make sure our destructor is invoked.
+    register_shutdown_function(array($this, '__destruct'));
 
     Filesystem::writeFile($this, '');
   }
@@ -84,9 +92,14 @@ final class TempFile {
    * @task internal
    */
   public function __destruct() {
+    if ($this->destroyed) {
+      return;
+    }
+
     if ($this->preserve) {
       return;
     }
+
     Filesystem::remove($this->dir);
 
     // NOTE: tempnam() doesn't guarantee it will return a file inside the
@@ -94,6 +107,10 @@ final class TempFile {
     // explicitly.
 
     Filesystem::remove($this->file);
+
+    $this->file = null;
+    $this->dir = null;
+    $this->destroyed = true;
   }
 
 }

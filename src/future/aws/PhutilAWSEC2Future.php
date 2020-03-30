@@ -1,13 +1,20 @@
 <?php
 
-/**
- * @group aws
- */
 final class PhutilAWSEC2Future extends PhutilAWSFuture {
 
-  public function getHost() {
-    return 'ec2.us-west-1.amazonaws.com';
+  private $parameters = array();
+
+  public function setParameters($parameters) {
+    $this->parameters = $parameters;
+    return $this;
+  }
+
+  protected function getParameters() {
+    return $this->parameters;
+  }
+
+  public function getServiceName() {
+    return 'ec2';
   }
 
 }
-

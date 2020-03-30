@@ -1,12 +1,9 @@
 <?php
 
-/**
- * @group conduit
- */
 final class ConduitFuture extends FutureProxy {
 
-  protected $client;
-  protected $conduitMethod;
+  private $client;
+  private $conduitMethod;
   private $profilerCallID;
 
   public function setClient(ConduitClient $client, $method) {
@@ -15,15 +12,19 @@ final class ConduitFuture extends FutureProxy {
     return $this;
   }
 
-  public function beginProfile($data) {
-    $profiler = PhutilServiceProfiler::getInstance();
-    $this->profilerCallID = $profiler->beginServiceCall(
-      array(
-        'type'    => 'conduit',
-        'method'  => $this->conduitMethod,
-        'size'    => strlen(http_build_query($data, '', '&')),
-      ));
-    return $this;
+  public function isReady() {
+    if ($this->profilerCallID === null) {
+      $profiler = PhutilServiceProfiler::getInstance();
+
+      $this->profilerCallID = $profiler->beginServiceCall(
+        array(
+          'type'    => 'conduit',
+          'method'  => $this->conduitMethod,
+          'size'    => $this->getProxiedFuture()->getHTTPRequestByteLength(),
+        ));
+    }
+
+    return parent::isReady();
   }
 
   protected function didReceiveResult($result) {
@@ -46,11 +47,15 @@ final class ConduitFuture extends FutureProxy {
       $raw = substr($raw, strlen($shield));
     }
 
-    $data = json_decode($raw, true);
-    if (!is_array($data)) {
-      throw new Exception(
-        "Host returned HTTP/200, but invalid JSON data in response to ".
-        "a Conduit method call:\n{$raw}");
+    $data = null;
+    try {
+      $data = phutil_json_decode($raw);
+    } catch (PhutilJSONParserException $ex) {
+      throw new PhutilProxyException(
+        pht(
+          'Host returned HTTP/200, but invalid JSON data in response to '.
+          'a Conduit method call.'),
+        $ex);
     }
 
     if ($data['error_code']) {

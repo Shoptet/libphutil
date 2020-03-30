@@ -23,6 +23,7 @@ final class PhutilOAuth1Future extends FutureProxy {
   private $hasConstructedFuture;
   private $callbackURI;
   private $headers = array();
+  private $timeout;
 
   public function setCallbackURI($callback_uri) {
     $this->callbackURI = $callback_uri;
@@ -74,6 +75,15 @@ final class PhutilOAuth1Future extends FutureProxy {
     return $this;
   }
 
+  public function setTimeout($timeout) {
+    $this->timeout = $timeout;
+    return $this;
+  }
+
+  public function getTimeout() {
+    return $this->timeout;
+  }
+
   public function __construct($uri, $data = array()) {
     $this->uri = new PhutilURI((string)$uri);
     $this->data = $data;
@@ -94,7 +104,7 @@ final class PhutilOAuth1Future extends FutureProxy {
     }
 
     $params = $params
-            + $this->uri->getQueryParams()
+            + $this->uri->getQueryParamsAsMap()
             + $this->getOAuth1Headers();
 
     return $this->sign($params);
@@ -113,7 +123,7 @@ final class PhutilOAuth1Future extends FutureProxy {
     return $this;
   }
 
-  public function getProxiedFuture() {
+  protected function getProxiedFuture() {
     $future = parent::getProxiedFuture();
 
     if (!$this->hasConstructedFuture) {
@@ -126,7 +136,7 @@ final class PhutilOAuth1Future extends FutureProxy {
       foreach ($oauth_headers as $header => $value) {
         $full_oauth_header[] = $header.'="'.urlencode($value).'"';
       }
-      $full_oauth_header = 'OAuth '.implode(", ", $full_oauth_header);
+      $full_oauth_header = 'OAuth '.implode(', ', $full_oauth_header);
 
       $future->addHeader('Authorization', $full_oauth_header);
 
@@ -134,6 +144,11 @@ final class PhutilOAuth1Future extends FutureProxy {
         $future->addHeader($header[0], $header[1]);
       }
       $this->headers = array();
+
+      $timeout = $this->getTimeout();
+      if ($timeout !== null) {
+        $future->setTimeout($timeout);
+      }
 
       $this->hasConstructedFuture = true;
     }
@@ -183,7 +198,7 @@ final class PhutilOAuth1Future extends FutureProxy {
 
     $sign_uri = clone $this->uri;
     $sign_uri->setFragment('');
-    $sign_uri->setQueryParams(array());
+    $sign_uri->removeAllQueryParams();
 
     $sign_uri->setProtocol(phutil_utf8_strtolower($sign_uri->getProtocol()));
     $protocol = $sign_uri->getProtocol();
@@ -220,7 +235,10 @@ final class PhutilOAuth1Future extends FutureProxy {
       case 'HMAC-SHA1':
         if (!$this->consumerSecret) {
           throw new Exception(
-            "Signature method 'HMAC-SHA1' requires setConsumerSecret()!");
+            pht(
+              "Signature method '%s' requires %s!",
+              'HMAC-SHA1',
+              'setConsumerSecret()'));
         }
 
         $hash = hash_hmac('sha1', $string, $key, true);
@@ -228,23 +246,26 @@ final class PhutilOAuth1Future extends FutureProxy {
       case 'RSA-SHA1':
         if (!$this->privateKey) {
           throw new Exception(
-            "Signature method 'RSA-SHA1' requires setPrivateKey()!");
+            pht(
+              "Signature method '%s' requires %s!",
+              'RSA-SHA1',
+              'setPrivateKey()'));
         }
 
         $cert = @openssl_pkey_get_private($this->privateKey->openEnvelope());
         if (!$cert) {
-          throw new Exception('openssl_pkey_get_private() failed!');
+          throw new Exception(pht('%s failed!', 'openssl_pkey_get_private()'));
         }
 
         $pkey = @openssl_get_privatekey($cert);
         if (!$pkey) {
-          throw new Exception('openssl_get_privatekey() failed!');
+          throw new Exception(pht('%s failed!', 'openssl_get_privatekey()'));
         }
 
         $signature = null;
         $ok = openssl_sign($string, $signature, $pkey, OPENSSL_ALGO_SHA1);
         if (!$ok) {
-          throw new Exception('openssl_sign() failed!');
+          throw new Exception(pht('%s failed!', 'openssl_sign()'));
         }
 
         openssl_free_key($pkey);
@@ -253,11 +274,14 @@ final class PhutilOAuth1Future extends FutureProxy {
       case 'PLAINTEXT':
         if (!$this->consumerSecret) {
           throw new Exception(
-            "Signature method 'PLAINTEXT' requires setConsumerSecret()!");
+            pht(
+              "Signature method '%s' requires %s!",
+              'PLAINTEXT',
+              'setConsumerSecret()'));
         }
         return $key;
       default:
-        throw new Exception("Unknown signature method '{$string}'!");
+        throw new Exception(pht("Unknown signature method '%s'!", $string));
     }
   }
 
@@ -270,11 +294,12 @@ final class PhutilOAuth1Future extends FutureProxy {
     $result = $this->getProxiedFuture()->resolvex();
     $result = $this->didReceiveResult($result);
     list($body) = $result;
-    $data = json_decode($body, true);
-    if (!is_array($data)) {
-      throw new Exception("Expected JSON, got: {$body}!");
+
+    try {
+      return phutil_json_decode($body);
+    } catch (PhutilJSONParserException $ex) {
+      throw new PhutilProxyException(pht('Expected JSON.'), $ex);
     }
-    return $data;
   }
 
 

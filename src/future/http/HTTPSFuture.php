@@ -2,10 +2,6 @@
 
 /**
  * Very basic HTTPS future.
- *
- * TODO: This class is extremely limited.
- *
- * @group futures
  */
 final class HTTPSFuture extends BaseHTTPFuture {
 
@@ -13,12 +9,23 @@ final class HTTPSFuture extends BaseHTTPFuture {
   private static $results = array();
   private static $pool = array();
   private static $globalCABundle;
-  private static $blindTrustDomains = array();
 
   private $handle;
   private $profilerCallID;
   private $cabundle;
   private $followLocation = true;
+  private $responseBuffer = '';
+  private $responseBufferPos;
+  private $files = array();
+  private $temporaryFiles = array();
+  private $rawBody;
+  private $rawBodyPos = 0;
+  private $fileHandle;
+
+  private $downloadPath;
+  private $downloadHandle;
+  private $parser;
+  private $progressSink;
 
   /**
    * Create a temp file containing an SSL cert, and use it for this session.
@@ -115,19 +122,8 @@ final class HTTPSFuture extends BaseHTTPFuture {
   }
 
   /**
-   * Set a list of domains to blindly trust. Certificates for these domains
-   * will not be validated.
-   *
-   * @param list<string> List of domain names to trust blindly.
-   * @return void
-   */
-  public static function setBlindlyTrustDomains(array $domains) {
-    self::$blindTrustDomains = array_fuse($domains);
-  }
-
-  /**
    * Load contents of remote URI. Behaves pretty much like
-   *  `@file_get_contents($uri)` but doesn't require `allow_url_fopen`.
+   * `@file_get_contents($uri)` but doesn't require `allow_url_fopen`.
    *
    * @param string
    * @param float
@@ -146,6 +142,57 @@ final class HTTPSFuture extends BaseHTTPFuture {
     }
   }
 
+  public function setDownloadPath($download_path) {
+    $this->downloadPath = $download_path;
+
+    if (Filesystem::pathExists($download_path)) {
+      throw new Exception(
+        pht(
+          'Specified download path "%s" already exists, refusing to '.
+          'overwrite.'));
+    }
+
+    return $this;
+  }
+
+  public function setProgressSink(PhutilProgressSink $progress_sink) {
+    $this->progressSink = $progress_sink;
+    return $this;
+  }
+
+  public function getProgressSink() {
+    return $this->progressSink;
+  }
+
+  /**
+   * Attach a file to the request.
+   *
+   * @param string  HTTP parameter name.
+   * @param string  File content.
+   * @param string  File name.
+   * @param string  File mime type.
+   * @return this
+   */
+  public function attachFileData($key, $data, $name, $mime_type) {
+    if (isset($this->files[$key])) {
+      throw new Exception(
+        pht(
+          '%s currently supports only one file attachment for each '.
+          'parameter name. You are trying to attach two different files with '.
+          'the same parameter, "%s".',
+          __CLASS__,
+          $key));
+    }
+
+    $this->files[$key] = array(
+      'data' => $data,
+      'name' => $name,
+      'mime' => $mime_type,
+    );
+
+    return $this;
+  }
+
   public function isReady() {
     if (isset($this->result)) {
       return true;
@@ -154,18 +201,28 @@ final class HTTPSFuture extends BaseHTTPFuture {
     $uri = $this->getURI();
     $domain = id(new PhutilURI($uri))->getDomain();
 
+    $is_download = $this->isDownload();
+
+    // See T13396. For now, use the streaming response parser only if we're
+    // downloading the response to disk.
+    $use_streaming_parser = (bool)$is_download;
+
     if (!$this->handle) {
+      $uri_object = new PhutilURI($uri);
+      $proxy = PhutilHTTPEngineExtension::buildHTTPProxyURI($uri_object);
+
       $profiler = PhutilServiceProfiler::getInstance();
       $this->profilerCallID = $profiler->beginServiceCall(
         array(
           'type' => 'http',
           'uri' => $uri,
+          'proxy' => (string)$proxy,
         ));
 
       if (!self::$multi) {
         self::$multi = curl_multi_init();
         if (!self::$multi) {
-          throw new Exception('curl_multi_init() failed!');
+          throw new Exception(pht('%s failed!', 'curl_multi_init()'));
         }
       }
 
@@ -174,7 +231,7 @@ final class HTTPSFuture extends BaseHTTPFuture {
       } else {
         $curl = curl_init();
         if (!$curl) {
-          throw new Exception('curl_init() failed!');
+          throw new Exception(pht('%s failed!', 'curl_init()'));
         }
       }
 
@@ -197,38 +254,31 @@ final class HTTPSFuture extends BaseHTTPFuture {
         curl_setopt($curl, CURLOPT_REDIR_PROTOCOLS, $allowed_protocols);
       }
 
-      $data = $this->getData();
-      if ($data) {
-
-        // NOTE: PHP's cURL implementation has a piece of magic which treats
-        // parameters as file paths if they begin with '@'. This means that
-        // an array like "array('name' => '@/usr/local/secret')" will attempt to
-        // read that file off disk and send it to the remote server. This
-        // behavior is pretty surprising, and it can easily become a relatively
-        // severe security vulnerability which allows an attacker to read any
-        // file the HTTP process has access to. Since this feature is very
-        // dangerous and not particularly useful, we prevent its use.
-        //
-        // After PHP 5.2.0, it is sufficient to pass a string to avoid this
-        // "feature" (it is only invoked in the array version). Prior to
-        // PHP 5.2.0, we block any request which have string data beginning with
-        // '@' (they would not work anyway).
-
-        if (is_array($data)) {
-          // Explicitly build a query string to prevent "@" security problems.
-          $data = http_build_query($data, '', '&');
-        }
-
-        if ($data[0] == '@' && version_compare(phpversion(), '5.2.0', '<')) {
+      if (strlen($this->rawBody)) {
+        if ($this->getData()) {
           throw new Exception(
-            "Attempting to make an HTTP request including string data that ".
-            "begins with '@'. Prior to PHP 5.2.0, this reads files off disk, ".
-            "which creates a wide attack window for security vulnerabilities. ".
-            "Upgrade PHP or avoid making cURL requests which begin with '@'.");
+            pht(
+              'You can not execute an HTTP future with both a raw request '.
+              'body and structured request data.'));
         }
-        curl_setopt($curl, CURLOPT_POSTFIELDS, $data);
+
+        // We aren't actually going to use this file handle, since we are
+        // just pushing data through the callback, but cURL gets upset if
+        // we don't hand it a real file handle.
+        $tmp = new TempFile();
+        $this->fileHandle = fopen($tmp, 'r');
+
+        // NOTE: We must set CURLOPT_PUT here to make cURL use CURLOPT_INFILE.
+        // We'll possibly overwrite the method later on, unless this is really
+        // a PUT request.
+        curl_setopt($curl, CURLOPT_PUT, true);
+        curl_setopt($curl, CURLOPT_INFILE, $this->fileHandle);
+        curl_setopt($curl, CURLOPT_INFILESIZE, strlen($this->rawBody));
+        curl_setopt($curl, CURLOPT_READFUNCTION,
+          array($this, 'willWriteBody'));
       } else {
-        curl_setopt($curl, CURLOPT_POSTFIELDS, null);
+        $data = $this->formatRequestDataForCURL();
+        curl_setopt($curl, CURLOPT_POSTFIELDS, $data);
       }
 
       $headers = $this->getHeaders();
@@ -263,7 +313,8 @@ final class HTTPSFuture extends BaseHTTPFuture {
 
       // Make sure we get the headers and data back.
       curl_setopt($curl, CURLOPT_HEADER, true);
-      curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+      curl_setopt($curl, CURLOPT_WRITEFUNCTION,
+        array($this, 'didReceiveDataCallback'));
 
       if ($this->followLocation) {
         curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
@@ -280,8 +331,15 @@ final class HTTPSFuture extends BaseHTTPFuture {
         curl_setopt($curl, CURLOPT_TIMEOUT, $timeout);
       }
 
+      // We're going to try to set CAINFO below. This doesn't work at all on
+      // OSX around Yosemite (see T5913). On these systems, we'll use the
+      // system CA and then try to tell the user that their settings were
+      // ignored and how to fix things if we encounter a CA-related error.
+      // Assume we have custom CA settings to start with; we'll clear this
+      // flag if we read the default CA info below.
+
       // Try some decent fallbacks here:
-      // - First, check if a bundle is set explicit for this request, via
+      // - First, check if a bundle is set explicitly for this request, via
       //   `setCABundle()` or similar.
       // - Then, check if a global bundle is set explicitly for all requests,
       //   via `setGlobalCABundle()` or similar.
@@ -310,17 +368,61 @@ final class HTTPSFuture extends BaseHTTPFuture {
         }
       }
 
-      curl_setopt($curl, CURLOPT_CAINFO, $this->getCABundle());
-
-      $domain = id(new PhutilURI($uri))->getDomain();
-      if (!empty(self::$blindTrustDomains[$domain])) {
-        // Disable peer verification for domains that we blindly trust.
-        curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, false);
-      } else {
-        curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, true);
+      if ($this->canSetCAInfo()) {
+        curl_setopt($curl, CURLOPT_CAINFO, $this->getCABundle());
       }
 
-      curl_setopt($curl, CURLOPT_SSLVERSION, 3);
+      $verify_peer = 1;
+      $verify_host = 2;
+
+      $extensions = PhutilHTTPEngineExtension::getAllExtensions();
+      foreach ($extensions as $extension) {
+        if ($extension->shouldTrustAnySSLAuthorityForURI($uri_object)) {
+          $verify_peer = 0;
+        }
+        if ($extension->shouldTrustAnySSLHostnameForURI($uri_object)) {
+          $verify_host = 0;
+        }
+      }
+
+      curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, $verify_peer);
+      curl_setopt($curl, CURLOPT_SSL_VERIFYHOST, $verify_host);
+      curl_setopt($curl, CURLOPT_SSLVERSION, 0);
+
+      // See T13391. Recent versions of cURL default to "HTTP/2" on some
+      // connections, but do not support HTTP/2 proxies. Until HTTP/2
+      // stabilizes, force HTTP/1.1 explicitly.
+      curl_setopt($curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+
+      if ($proxy) {
+        curl_setopt($curl, CURLOPT_PROXY, (string)$proxy);
+      }
+
+      if ($is_download) {
+        $this->downloadHandle = @fopen($this->downloadPath, 'wb+');
+        if (!$this->downloadHandle) {
+          throw new Exception(
+            pht(
+              'Failed to open filesystem path "%s" for writing.',
+              $this->downloadPath));
+        }
+      }
+
+      if ($use_streaming_parser) {
+        $streaming_parser = id(new PhutilHTTPResponseParser())
+          ->setFollowLocationHeaders($this->getFollowLocation());
+
+        if ($this->downloadHandle) {
+          $streaming_parser->setWriteHandle($this->downloadHandle);
+        }
+
+        $progress_sink = $this->getProgressSink();
+        if ($progress_sink) {
+          $streaming_parser->setProgressSink($progress_sink);
+        }
+
+        $this->parser = $streaming_parser;
+      }
     } else {
       $curl = $this->handle;
 
@@ -353,15 +455,41 @@ final class HTTPSFuture extends BaseHTTPFuture {
       return false;
     }
 
+    // The request is complete, so release any temporary files we wrote
+    // earlier.
+    $this->temporaryFiles = array();
+
     $info = self::$results[(int)$curl];
-    $result = curl_multi_getcontent($curl);
+    $result = $this->responseBuffer;
     $err_code = $info['result'];
 
     if ($err_code) {
-      $status = new HTTPFutureResponseStatusCURL($err_code, $uri);
+      if (($err_code == CURLE_SSL_CACERT) && !$this->canSetCAInfo()) {
+        $status = new HTTPFutureCertificateResponseStatus(
+          HTTPFutureCertificateResponseStatus::ERROR_IMMUTABLE_CERTIFICATES,
+          $uri);
+      } else {
+        $status = new HTTPFutureCURLResponseStatus($err_code, $uri);
+      }
+
       $body = null;
       $headers = array();
       $this->result = array($status, $body, $headers);
+    } else if ($this->parser) {
+      $streaming_parser = $this->parser;
+      try {
+        $responses = $streaming_parser->getResponses();
+        $final_response = last($responses);
+        $result = array(
+          $final_response->getStatus(),
+          $final_response->getBody(),
+          $final_response->getHeaders(),
+        );
+      } catch (HTTPFutureParseResponseStatus $ex) {
+        $result = array($ex, null, array());
+      }
+
+      $this->result = $result;
     } else {
       // cURL returns headers of all redirects, we strip all but the final one.
       $redirects = curl_getinfo($curl, CURLINFO_REDIRECT_COUNT);
@@ -374,11 +502,321 @@ final class HTTPSFuture extends BaseHTTPFuture {
 
     // NOTE: We want to use keepalive if possible. Return the handle to a
     // pool for the domain; don't close it.
-    self::$pool[$domain][] = $curl;
+    if ($this->shouldReuseHandles()) {
+      self::$pool[$domain][] = $curl;
+    }
+
+    if ($is_download) {
+      if ($this->downloadHandle) {
+        fflush($this->downloadHandle);
+        fclose($this->downloadHandle);
+        $this->downloadHandle = null;
+      }
+    }
+
+    $sink = $this->getProgressSink();
+    if ($sink) {
+      $status = head($this->result);
+      if ($status->isError()) {
+        $sink->didFailWork();
+      } else {
+        $sink->didCompleteWork();
+      }
+    }
 
     $profiler = PhutilServiceProfiler::getInstance();
     $profiler->endServiceCall($this->profilerCallID, array());
 
     return true;
   }
+
+
+  /**
+   * Callback invoked by cURL as it reads HTTP data from the response. We save
+   * the data to a buffer.
+   */
+  public function didReceiveDataCallback($handle, $data) {
+    if ($this->parser) {
+      $this->parser->readBytes($data);
+    } else {
+      $this->responseBuffer .= $data;
+    }
+
+    return strlen($data);
+  }
+
+
+  /**
+   * Read data from the response buffer.
+   *
+   * NOTE: Like @{class:ExecFuture}, this method advances a read cursor but
+   * does not discard the data. The data will still be buffered, and it will
+   * all be returned when the future resolves. To discard the data after
+   * reading it, call @{method:discardBuffers}.
+   *
+   * @return string Response data, if available.
+   */
+  public function read() {
+    if ($this->isDownload()) {
+      throw new Exception(
+        pht(
+          'You can not read the result buffer while streaming results '.
+          'to disk: there is no in-memory buffer to read.'));
+    }
+
+    if ($this->parser) {
+      throw new Exception(
+        pht(
+          'Streaming reads are not currently supported by the streaming '.
+          'parser.'));
+    }
+
+    $result = substr($this->responseBuffer, $this->responseBufferPos);
+    $this->responseBufferPos = strlen($this->responseBuffer);
+    return $result;
+  }
+
+
+  /**
+   * Discard any buffered data. Normally, you call this after reading the
+   * data with @{method:read}.
+   *
+   * @return this
+   */
+  public function discardBuffers() {
+    if ($this->isDownload()) {
+      throw new Exception(
+        pht(
+          'You can not discard the result buffer while streaming results '.
+          'to disk: there is no in-memory buffer to discard.'));
+    }
+
+    if ($this->parser) {
+      throw new Exception(
+        pht(
+          'Buffer discards are not currently supported by the streaming '.
+          'parser.'));
+    }
+
+    $this->responseBuffer = '';
+    $this->responseBufferPos = 0;
+    return $this;
+  }
+
+
+  /**
+   * Produces a value safe to pass to `CURLOPT_POSTFIELDS`.
+   *
+   * @return wild   Some value, suitable for use in `CURLOPT_POSTFIELDS`.
+   */
+  private function formatRequestDataForCURL() {
+    // We're generating a value to hand to cURL as CURLOPT_POSTFIELDS. The way
+    // cURL handles this value has some tricky caveats.
+
+    // First, we can return either an array or a query string. If we return
+    // an array, we get a "multipart/form-data" request. If we return a
+    // query string, we get an "application/x-www-form-urlencoded" request.
+
+    // Second, if we return an array we can't duplicate keys. The user might
+    // want to send the same parameter multiple times.
+
+    // Third, if we return an array and any of the values start with "@",
+    // cURL includes arbitrary files off disk and sends them to an untrusted
+    // remote server. For example, an array like:
+    //
+    //   array('name' => '@/usr/local/secret')
+    //
+    // ...will attempt to read that file off disk and transmit its contents with
+    // the request. This behavior is pretty surprising, and it can easily
+    // become a relatively severe security vulnerability which allows an
+    // attacker to read any file the HTTP process has access to. Since this
+    // feature is very dangerous and not particularly useful, we prevent its
+    // use. Broadly, this means we must reject some requests because they
+    // contain an "@" in an inconvenient place.
+
+    // Generally, to avoid the "@" case and because most servers usually
+    // expect "application/x-www-form-urlencoded" data, we try to return a
+    // string unless there are files attached to this request.
+
+    $data = $this->getData();
+    $files = $this->files;
+
+    $any_data = ($data || (is_string($data) && strlen($data)));
+    $any_files = (bool)$this->files;
+
+    if (!$any_data && !$any_files) {
+      // No files or data, so just bail.
+      return null;
+    }
+
+    if (!$any_files) {
+      // If we don't have any files, just encode the data as a query string,
+      // make sure it's not including any files, and we're good to go.
+      if (is_array($data)) {
+        $data = phutil_build_http_querystring($data);
+      }
+
+      $this->checkForDangerousCURLMagic($data, $is_query_string = true);
+
+      return $data;
+    }
+
+    // If we've made it this far, we have some files, so we need to return
+    // an array. First, convert the other data into an array if it isn't one
+    // already.
+
+    if (is_string($data)) {
+      // NOTE: We explicitly don't want fancy array parsing here, so just
+      // do a basic parse and then convert it into a dictionary ourselves.
+      $parser = new PhutilQueryStringParser();
+      $pairs = $parser->parseQueryStringToPairList($data);
+
+      $map = array();
+      foreach ($pairs as $pair) {
+        list($key, $value) = $pair;
+        if (array_key_exists($key, $map)) {
+          throw new Exception(
+            pht(
+              'Request specifies two values for key "%s", but parameter '.
+              'names must be unique if you are posting file data due to '.
+              'limitations with cURL.',
+              $key));
+        }
+        $map[$key] = $value;
+      }
+
+      $data = $map;
+    }
+
+    foreach ($data as $key => $value) {
+      $this->checkForDangerousCURLMagic($value, $is_query_string = false);
+    }
+
+    foreach ($this->files as $name => $info) {
+      if (array_key_exists($name, $data)) {
+        throw new Exception(
+          pht(
+            'Request specifies a file with key "%s", but that key is also '.
+            'defined by normal request data. Due to limitations with cURL, '.
+            'requests that post file data must use unique keys.',
+            $name));
+      }
+
+      $tmp = new TempFile($info['name']);
+      Filesystem::writeFile($tmp, $info['data']);
+      $this->temporaryFiles[] = $tmp;
+
+      // In 5.5.0 and later, we can use CURLFile. Prior to that, we have to
+      // use this "@" stuff.
+
+      if (class_exists('CURLFile', false)) {
+        $file_value = new CURLFile((string)$tmp, $info['mime'], $info['name']);
+      } else {
+        $file_value = '@'.(string)$tmp;
+      }
+
+      $data[$name] = $file_value;
+    }
+
+    return $data;
+  }
+
+
+  /**
+   * Detect strings which will cause cURL to do horrible, insecure things.
+   *
+   * @param string  Possibly dangerous string.
+   * @param bool    True if this string is being used as part of a query string.
+   * @return void
+   */
+  private function checkForDangerousCURLMagic($string, $is_query_string) {
+    if (empty($string[0]) || ($string[0] != '@')) {
+      // This isn't an "@..." string, so it's fine.
+      return;
+    }
+
+    if ($is_query_string) {
+      if (version_compare(phpversion(), '5.2.0', '<')) {
+        throw new Exception(
+          pht(
+            'Attempting to make an HTTP request, but query string data begins '.
+            'with "%s". Prior to PHP 5.2.0 this reads files off disk, which '.
+            'creates a wide attack window for security vulnerabilities. '.
+            'Upgrade PHP or avoid making cURL requests which begin with "%s".',
+            '@',
+            '@'));
+      }
+
+      // This is safe if we're on PHP 5.2.0 or newer.
+      return;
+    }
+
+    throw new Exception(
+      pht(
+        'Attempting to make an HTTP request which includes file data, but the '.
+        'value of a query parameter begins with "%s". PHP interprets these '.
+        'values to mean that it should read arbitrary files off disk and '.
+        'transmit them to remote servers. Declining to make this request.',
+        '@'));
+  }
+
+
+  /**
+   * Determine whether CURLOPT_CAINFO is usable on this system.
+   */
+  private function canSetCAInfo() {
+    // We cannot set CAInfo on OSX after Yosemite.
+
+    $osx_version = PhutilExecutionEnvironment::getOSXVersion();
+    if ($osx_version) {
+      if (version_compare($osx_version, 14, '>=')) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+
+  /**
+   * Write a raw HTTP body into the request.
+   *
+   * You must write the entire body before starting the request.
+   *
+   * @param string Raw body.
+   * @return this
+   */
+  public function write($raw_body) {
+    $this->rawBody = $raw_body;
+    return $this;
+  }
+
+
+  /**
+   * Callback to pass data to cURL.
+   */
+  public function willWriteBody($handle, $infile, $len) {
+    $bytes = substr($this->rawBody, $this->rawBodyPos, $len);
+    $this->rawBodyPos += $len;
+    return $bytes;
+  }
+
+  private function shouldReuseHandles() {
+    $curl_version = curl_version();
+    $version = idx($curl_version, 'version');
+
+    // NOTE: cURL 7.43.0 has a bug where the POST body length is not recomputed
+    // properly when a handle is reused. For this version of cURL, disable
+    // handle reuse and accept a small performance penalty. See T8654.
+    if ($version == '7.43.0') {
+      return false;
+    }
+
+    return true;
+  }
+
+  private function isDownload() {
+   return ($this->downloadPath !== null);
+  }
+
 }

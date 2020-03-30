@@ -1,123 +1,231 @@
 <?php
 
-/**
- * @group testcase
- */
 final class FileFinderTestCase extends PhutilTestCase {
 
-  protected function findFiles($root, $checksums, $type, $path, $mode) {
-    $finder = new FileFinder($root);
-    $finder->setGenerateChecksums($checksums)
-           ->excludePath("./exclude")
-           ->excludePath("subdir.txt")
-           ->withType($type)
-           ->withPath($path)
-           ->withSuffix('txt')
-           ->setForceMode($mode);
-    $files = $finder->find();
-    return $files;
+  private function newFinder($directory = null) {
+    if (!$directory) {
+      $directory = dirname(__FILE__).'/data';
+    }
+
+    return id(new FileFinder($directory))
+      ->excludePath('./exclude')
+      ->excludePath('subdir.txt');
   }
 
   public function testFinderWithChecksums() {
-    $root = dirname(__FILE__) . '/data';
-    foreach (array("php", "shell") as $mode) {
-      $files = $this->findFiles($root, true, 'f', '*', $mode);
-
-      // Test whether correct files were found.
-      $this->assertEqual(true,
-          array_key_exists('test.txt', $files));
-      $this->assertEqual(true,
-          array_key_exists('file.txt', $files));
-      $this->assertEqual(true,
-          array_key_exists('include_dir.txt/subdir.txt/alsoinclude.txt',
-              $files));
-      $this->assertEqual(false,
-          array_key_exists('test', $files));
-      $this->assertEqual(true,
-          array_key_exists('.hidden.txt', $files));
-      $this->assertEqual(false,
-          array_key_exists('exclude/file.txt', $files));
-      $this->assertEqual(false,
-          array_key_exists('include_dir.txt', $files));
-
-      foreach ($files as $file => $checksum) {
-        $this->assertEqual(false, is_dir($file));
-      }
-
-      // Test checksums.
-      $this->assertEqual($files['test.txt'],
-          'aea46212fa8b8d0e0e6aa34a15c9e2f5');
-      $this->assertEqual($files['file.txt'],
-          '725130ba6441eadb4e5d807898e0beae');
-      $this->assertEqual($files['.hidden.txt'],
-          'b6cfc9ce9afe12b258ee1c19c235aa27');
-      $this->assertEqual($files['include_dir.txt/subdir.txt/alsoinclude.txt'],
-          '91e5c1ad76ff229c6456ac92e74e1d9f');
-    }
+    $this->assertFinder(
+      pht('Basic Checksums'),
+      $this->newFinder()
+        ->setGenerateChecksums(true)
+        ->withType('f')
+        ->withPath('*')
+        ->withSuffix('txt'),
+      array(
+        '.hidden.txt' =>
+          'b6cfc9ce9afe12b258ee1c19c235aa27',
+        'file.txt' =>
+          '725130ba6441eadb4e5d807898e0beae',
+        'include_dir.txt/anotherfile.txt' =>
+          '91e5c1ad76ff229c6456ac92e74e1d9f',
+        'include_dir.txt/subdir.txt/alsoinclude.txt' =>
+          '91e5c1ad76ff229c6456ac92e74e1d9f',
+        'test.txt' =>
+          'aea46212fa8b8d0e0e6aa34a15c9e2f5',
+      ));
   }
 
   public function testFinderWithoutChecksums() {
-    $root = dirname(__FILE__) . '/data';
-    foreach (array("php", "shell") as $mode) {
-      $files = $this->findFiles($root, false, 'f', '*', $mode);
+    $this->assertFinder(
+      pht('Basic No Checksums'),
+      $this->newFinder()
+        ->withType('f')
+        ->withPath('*')
+        ->withSuffix('txt'),
+      array(
+        '.hidden.txt',
+        'file.txt',
+        'include_dir.txt/anotherfile.txt',
+        'include_dir.txt/subdir.txt/alsoinclude.txt',
+        'test.txt',
+      ));
+  }
 
-      // Test whether correct files were found.
-      $this->assertEqual(true, in_array('test.txt', $files));
-      $this->assertEqual(true, in_array('file.txt', $files));
-      $this->assertEqual(true, in_array('.hidden.txt', $files));
-      $this->assertEqual(true,
-          in_array('include_dir.txt/subdir.txt/alsoinclude.txt', $files));
-      $this->assertEqual(false, in_array('test', $files));
-      $this->assertEqual(false, in_array('exclude/file.txt', $files));
-      $this->assertEqual(false, in_array('include_dir.txt', $files));
-
-      foreach ($files as $file => $checksum) {
-        $this->assertEqual(false, is_dir($file));
-      }
-    }
+  public function testFinderWithFilesAndDirectories() {
+    $this->assertFinder(
+      pht('With Files And Directories'),
+      $this->newFinder()
+        ->setGenerateChecksums(true)
+        ->withPath('*')
+        ->withSuffix('txt'),
+      array(
+        '.hidden.txt' =>
+          'b6cfc9ce9afe12b258ee1c19c235aa27',
+        'file.txt' =>
+          '725130ba6441eadb4e5d807898e0beae',
+        'include_dir.txt' => null,
+        'include_dir.txt/anotherfile.txt' =>
+          '91e5c1ad76ff229c6456ac92e74e1d9f',
+        'include_dir.txt/subdir.txt' => null,
+        'include_dir.txt/subdir.txt/alsoinclude.txt' =>
+          '91e5c1ad76ff229c6456ac92e74e1d9f',
+        'test.txt' =>
+          'aea46212fa8b8d0e0e6aa34a15c9e2f5',
+      ));
   }
 
   public function testFinderWithDirectories() {
-    $root = dirname(__FILE__) . '/data';
-    foreach (array("php", "shell") as $mode) {
-      $files = $this->findFiles($root, true, '', '*', $mode);
-
-      // Test whether the correct files were found.
-      $this->assertEqual(true,
-          array_key_exists('test.txt', $files));
-      $this->assertEqual(true,
-          array_key_exists('file.txt', $files));
-      $this->assertEqual(true,
-          array_key_exists('include_dir.txt/subdir.txt/alsoinclude.txt',
-              $files));
-      $this->assertEqual(false,
-          array_key_exists('test', $files));
-      $this->assertEqual(true,
-          array_key_exists('.hidden.txt', $files));
-      $this->assertEqual(false,
-          array_key_exists('exclude/file.txt', $files));
-      $this->assertEqual(true,
-          array_key_exists('include_dir.txt', $files));
-
-      // Test checksums.
-      $this->assertEqual($files['test.txt'],
-          'aea46212fa8b8d0e0e6aa34a15c9e2f5');
-      $this->assertEqual($files['include_dir.txt'], null);
-    }
+    $this->assertFinder(
+      pht('Just Directories'),
+      $this->newFinder()
+        ->withType('d'),
+      array(
+        'include_dir.txt',
+        'include_dir.txt/subdir.txt',
+      ));
   }
 
   public function testFinderWithPath() {
-    $root = dirname(__FILE__) . '/data';
-    foreach (array("php", "shell") as $mode) {
-      $files = $this->findFiles($root, true, 'f',
-          '*/include_dir.txt/subdir.txt/alsoinclude.txt', $mode);
+    $this->assertFinder(
+      pht('With Path'),
+      $this->newFinder()
+        ->setGenerateChecksums(true)
+        ->withType('f')
+        ->withPath('*/include_dir.txt/subdir.txt/alsoinclude.txt')
+        ->withSuffix('txt'),
+      array(
+        'include_dir.txt/subdir.txt/alsoinclude.txt' =>
+          '91e5c1ad76ff229c6456ac92e74e1d9f',
+      ));
+  }
 
-      // Test whether the correct files were found.
-      $this->assertEqual(true,
-          array_key_exists('include_dir.txt/subdir.txt/alsoinclude.txt',
-              $files));
-      // Ensure that only the one file was found.
-      $this->assertEqual(1, count($files));
+  public function testFinderWithNames() {
+    $this->assertFinder(
+      pht('With Names'),
+      $this->newFinder()
+        ->withType('f')
+        ->withPath('*')
+        ->withName('test'),
+      array(
+        'include_dir.txt/subdir.txt/test',
+        'include_dir.txt/test',
+        'test',
+      ));
+  }
+
+  public function testFinderWithNameAndSuffix() {
+    $this->assertFinder(
+      pht('With Name and Suffix'),
+      $this->newFinder()
+        ->withType('f')
+        ->withName('alsoinclude.txt')
+        ->withSuffix('txt'),
+      array(
+        'include_dir.txt/subdir.txt/alsoinclude.txt',
+      ));
+  }
+
+  public function testFinderWithGlobMagic() {
+    // Fill a temporary directory with all this magic garbage so we don't have
+    // to check a bunch of files with backslashes in their names into version
+    // control.
+    $tmp_dir = Filesystem::createTemporaryDirectory();
+
+    $crazy_magic = array(
+      'backslash\\.\\*',
+      'star-*.*',
+      'star-*.txt',
+      'star.t*t',
+      'star.tesseract',
+    );
+
+    foreach ($crazy_magic as $sketchy_path) {
+      Filesystem::writeFile($tmp_dir.'/'.$sketchy_path, '.');
+    }
+
+    $this->assertFinder(
+      pht('Glob Magic, Literal .t*t'),
+      $this->newFinder($tmp_dir)
+        ->withType('f')
+        ->withSuffix('t*t'),
+      array(
+        'star.t*t',
+      ));
+
+    $this->assertFinder(
+      pht('Glob Magic, .tesseract'),
+      $this->newFinder($tmp_dir)
+        ->withType('f')
+        ->withSuffix('tesseract'),
+      array(
+        'star.tesseract',
+      ));
+
+    $this->assertFinder(
+      pht('Glob Magic, Name'),
+      $this->newFinder($tmp_dir)
+        ->withType('f')
+        ->withName('star-*'),
+      array());
+
+    $this->assertFinder(
+      pht('Glob Magic, Name + Suffix'),
+      $this->newFinder($tmp_dir)
+        ->withType('f')
+        ->withName('star-*.*'),
+      array(
+        'star-*.*',
+      ));
+
+    $this->assertFinder(
+      pht('Glob Magic, Backslash Suffix'),
+      $this->newFinder($tmp_dir)
+        ->withType('f')
+        ->withSuffix('\\*'),
+      array(
+        'backslash\\.\\*',
+      ));
+
+    $this->assertFinder(
+      pht('Glob Magic, With Globs'),
+      $this->newFinder($tmp_dir)
+        ->withType('f')
+        ->withNameGlob('star-*'),
+      array(
+        'star-*.*',
+        'star-*.txt',
+      ));
+
+    $this->assertFinder(
+      pht('Glob Magic, With Globs + Suffix'),
+      $this->newFinder($tmp_dir)
+        ->withType('f')
+        ->withNameGlob('star-*')
+        ->withSuffix('txt'),
+      array(
+        'star-*.txt',
+      ));
+  }
+
+  private function assertFinder($label, FileFinder $finder, $expect) {
+    $modes = array(
+      'php',
+      'shell',
+    );
+    foreach ($modes as $mode) {
+      $actual = id(clone $finder)
+        ->setForceMode($mode)
+        ->find();
+
+      if ($finder->getGenerateChecksums()) {
+        ksort($actual);
+      } else {
+        sort($actual);
+      }
+
+      $this->assertEqual(
+        $expect,
+        $actual,
+        pht('Test Case "%s" in Mode "%s"', $label, $mode));
     }
   }
 

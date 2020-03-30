@@ -14,9 +14,8 @@
  * @task create  Creating a New Editor
  * @task edit    Editing Interactively
  * @task config  Configuring Options
- * @group console
  */
-final class PhutilInteractiveEditor {
+final class PhutilInteractiveEditor extends Phobject {
 
   private $name     = '';
   private $content  = '';
@@ -58,6 +57,10 @@ final class PhutilInteractiveEditor {
     $name = $this->getName();
     $content = $this->getContent();
 
+    if (phutil_is_windows()) {
+      $content = str_replace("\n", "\r\n", $content);
+    }
+
     $tmp = Filesystem::createTemporaryDirectory('edit.');
     $path = $tmp.DIRECTORY_SEPARATOR.$name;
 
@@ -74,8 +77,34 @@ final class PhutilInteractiveEditor {
     $err = $this->invokeEditor($editor, $path, $offset);
 
     if ($err) {
+      // See T13297. On macOS, "vi" and "vim" may exit with errors even though
+      // the edit succeeded. If the binary is "vi" or "vim" and we get an exit
+      // code, we perform an additional test on the binary.
+      $vi_binaries = array(
+        'vi' => true,
+        'vim' => true,
+      );
+
+      $binary = basename($editor);
+      if (isset($vi_binaries[$binary])) {
+        // This runs "Q" (an invalid command), then "q" (a valid command,
+        // meaning "quit"). Vim binaries with behavior that makes them poor
+        // interactive editors will exit "1".
+        list($diagnostic_err) = exec_manual('%R +Q +q', $binary);
+
+        // If we get an error back, the binary is badly behaved. Ignore the
+        // original error and assume it's not meaningful, since it just
+        // indicates the user made a typo in a command when editing
+        // interactively, which is routine and unconcerning.
+        if ($diagnostic_err) {
+          $err = 0;
+        }
+      }
+    }
+
+    if ($err) {
       Filesystem::remove($tmp);
-      throw new Exception("Editor exited with an error code (#{$err}).");
+      throw new Exception(pht('Editor exited with an error code (#%d).', $err));
     }
 
     try {
@@ -84,6 +113,10 @@ final class PhutilInteractiveEditor {
     } catch (Exception $ex) {
       Filesystem::remove($tmp);
       throw $ex;
+    }
+
+    if (phutil_is_windows()) {
+      $result = str_replace("\r\n", "\n", $result);
     }
 
     $this->setContent($result);
@@ -164,7 +197,7 @@ final class PhutilInteractiveEditor {
 
 
   /**
-   * Get the current document name. See setName() for details.
+   * Get the current document name. See @{method:setName} for details.
    *
    * @return string  Current document name.
    *
@@ -253,22 +286,23 @@ final class PhutilInteractiveEditor {
       return $editor;
     }
 
-    // Look for `editor` in PATH, some systems provide an editor which is
-    // linked to something sensible.
-    if (Filesystem::binaryExists('editor')) {
-      return 'editor';
-    }
-
     if ($this->fallback) {
       return $this->fallback;
     }
 
-    if (Filesystem::binaryExists('nano')) {
-      return 'nano';
+    $candidates = array('editor', 'nano', 'sensible-editor', 'vi');
+
+    foreach ($candidates as $cmd) {
+      if (Filesystem::binaryExists($cmd)) {
+        return $cmd;
+      }
     }
 
     throw new Exception(
-      "Unable to launch an interactive text editor. Set the EDITOR ".
-      "environment variable to an appropriate editor.");
+      pht(
+        'Unable to launch an interactive text editor. Set the %s '.
+        'environment variable to an appropriate editor.',
+        'EDITOR'));
   }
+
 }

@@ -7,7 +7,6 @@
  *   - For writes, we set the keys in each cache.
  *
  * @task  config    Configuring the Stack
- * @group cache
  */
 final class PhutilKeyValueCacheStack extends PhutilKeyValueCache {
 
@@ -69,7 +68,7 @@ final class PhutilKeyValueCacheStack extends PhutilKeyValueCache {
    * @task    config
    */
   public function setNextTTL($ttl) {
-    $this->ttl = $ttl;
+    $this->nextTTL = $ttl;
     return $this;
   }
 

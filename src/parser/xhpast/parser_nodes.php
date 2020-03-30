@@ -1,7 +1,9 @@
 <?php
 
-/* @generated @undivinable */
-
+/**
+ * @generated
+ * @undivinable
+ */
 function xhp_parser_node_constants() {
   return array(
     9000 => 'n_PROGRAM',
@@ -109,5 +111,17 @@ function xhp_parser_node_constants() {
     9102 => 'n_METHOD_CALL',
     9103 => 'n_CONCATENATION_LIST',
     9104 => 'n_PARENTHETICAL_EXPRESSION',
+    9105 => 'n_TRAIT_USE',
+    9106 => 'n_TRAIT_USE_LIST',
+    9107 => 'n_TRAIT_ADAPTATION_LIST',
+    9108 => 'n_TRAIT_INSTEADOF',
+    9109 => 'n_TRAIT_REFERENCE_LIST',
+    9110 => 'n_TRAIT_METHOD_REFERENCE',
+    9111 => 'n_TRAIT_AS',
+    9112 => 'n_YIELD',
+    9113 => 'n_FINALLY',
+    9114 => 'n_UNPACK',
+    9115 => 'n_DECLARATION_RETURN',
+    9116 => 'n_NULLABLE_TYPE',
   );
 }

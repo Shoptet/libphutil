@@ -30,7 +30,7 @@
  * a server but performs I/O on stdin/stdout, and you need to act like a client
  * or interact with the program at the same time as you manage traditional
  * socket connections. Examples are Mercurial operating in "cmdserve" mode, git
- * operating in "receive-pack" mode, etc. It is unlikely that any reasonble
+ * operating in "receive-pack" mode, etc. It is unlikely that any reasonable
  * use of this class is concise enough to make a short example out of, so you
  * get a contrived one instead.
  *
@@ -41,8 +41,6 @@
  * the implementation of this class is fairly straightforward.
  *
  * @task construct Construction
- *
- * @group channel
  */
 final class PhutilExecChannel extends PhutilChannel {
 
@@ -63,6 +61,8 @@ final class PhutilExecChannel extends PhutilChannel {
    * @task construct
    */
   public function __construct(ExecFuture $future) {
+    parent::__construct();
+
     // Make an empty write to keep the stdin pipe open. By default, futures
     // close this pipe when they start.
     $future->write('', $keep_pipe = true);
@@ -88,7 +88,7 @@ final class PhutilExecChannel extends PhutilChannel {
     return !$this->future->isReady();
   }
 
-  protected function readBytes() {
+  protected function readBytes($length) {
     list($stdout, $stderr) = $this->future->read();
     $this->future->discardBuffers();
 
@@ -97,7 +97,7 @@ final class PhutilExecChannel extends PhutilChannel {
         call_user_func($this->stderrHandler, $this, $stderr);
       } else {
         throw new Exception(
-          "Unexpected output to stderr on exec channel: {$stderr}");
+          pht('Unexpected output to stderr on exec channel: %s', $stderr));
       }
     }
 
@@ -108,8 +108,12 @@ final class PhutilExecChannel extends PhutilChannel {
     $this->future->write($bytes, $keep_pipe = true);
   }
 
+  public function closeWriteChannel() {
+    $this->future->write('', $keep_pipe = false);
+  }
+
   protected function writeBytes($bytes) {
-    throw new Exception("ExecFuture can not write bytes directly!");
+    throw new Exception(pht('%s can not write bytes directly!', 'ExecFuture'));
   }
 
   protected function getReadSockets() {
@@ -120,6 +124,28 @@ final class PhutilExecChannel extends PhutilChannel {
     return $this->future->getWriteSockets();
   }
 
+  public function isReadBufferEmpty() {
+    // Check both the channel and future read buffers, since either could have
+    // data.
+    return parent::isReadBufferEmpty() && $this->future->isReadBufferEmpty();
+  }
+
+  public function setReadBufferSize($size) {
+    // NOTE: We may end up using 2x the buffer size here, one inside
+    // ExecFuture and one inside the Channel. We could tune this eventually, but
+    // it should be fine for now.
+    parent::setReadBufferSize($size);
+    $this->future->setReadBufferSize($size);
+    return $this;
+  }
+
+  public function isWriteBufferEmpty() {
+    return $this->future->isWriteBufferEmpty();
+  }
+
+  public function getWriteBufferSize() {
+    return $this->future->getWriteBufferSize();
+  }
 
   /**
    * If the wrapped @{class:ExecFuture} outputs data to stderr, we normally

@@ -3,10 +3,8 @@
 /**
  * Very simple class to guess the languages of source files which we failed to
  * determine by examining file name/extension rules.
- *
- * @group util
  */
-final class PhutilLanguageGuesser {
+final class PhutilLanguageGuesser extends Phobject {
 
   /**
    * Guess which computer programming language a file is written in.

@@ -3,13 +3,10 @@
 #define push_state(s) xhp_new_push_state(s, yyg)
 #define pop_state() xhp_new_pop_state(yyg)
 #define set_state(s) xhp_set_state(s, yyg)
-#define last_token() yyextra->last_token
 
-#define YY_USER_ACTION \
-  if (!yyg->yy_more_len) \
-    yyextra->first_lineno = yyextra->lineno;
 #define pttok(t, txt) \
-  yyextra->token_list.push_back(new xhpast::Token(t, txt, yyextra->list_size++)); \
+  yyextra->token_list.push_back( \
+    new xhpast::Token(t, txt, yyextra->list_size++)); \
   *yylval = new xhpast::Node(0, yyextra->list_size - 1);
 #define ptok(t) \
   pttok(t, yytext);
@@ -41,11 +38,6 @@ static void yy_scan_newlines(const char* text, struct yyguts_t* yyg);
 %option bison-bridge
 %option 8bit
 
- /* I think an interactive scanner is required because of the bison state
-  * pushing we do. I'm putting an explicit interactive declaration here in case
-  * someone tries adding -CF or whatever to the make flags. */
-%option interactive
-
  /* The different lexing states. Note that the transitions are done either
   * in the lex actions, or in a generic manner in yy_token(). */
 %s PHP
@@ -55,7 +47,6 @@ static void yy_scan_newlines(const char* text, struct yyguts_t* yyg);
 %s PHP_HEREDOC_START
 %s PHP_HEREDOC_NSTART
 %s PHP_HEREDOC_NEWLINE
-%s PHP_HEREDOC_DATA
 %s PHP_NO_RESERVED_WORDS
 %s PHP_NO_RESERVED_WORDS_PERSIST
 %s PHP_
@@ -64,6 +55,7 @@ LNUM [0-9]+
 DNUM ([0-9]*"."[0-9]+)|([0-9]+"."[0-9]*)
 EXPONENT_DNUM (({LNUM}|{DNUM})[eE][+-]?{LNUM})
 HNUM "0x"[0-9a-fA-F]+
+BNUM "0b"[01]+
 
 LABEL [a-zA-Z_\x7f-\xff][a-zA-Z0-9_\x7f-\xff]*
 BYTE (.|\n)
@@ -76,38 +68,16 @@ NEWLINE ("\r\n"|"\n"|"\r")
 
  /* Open / close PHP + inline HTML */
 <INITIAL>{
-  "<?php"([ \t]|{NEWLINE}) {
+  "<?php"/([ \t]|{NEWLINE}) {
     yy_scan_newlines(yytext + 5, yyg);
     // the state transition will be done in yy_token()
     tok(T_OPEN_TAG);
   }
   "<?" {
-    if (yyextra->short_tags) {
-      tok(T_OPEN_TAG);
-    } else {
-      tok(T_INLINE_HTML);
-    }
+    tok(T_OPEN_TAG);
   }
   "<?=" {
-    if (yyextra->short_tags) {
-      tok(T_OPEN_TAG_WITH_ECHO);
-    } else {
-      tok(T_INLINE_HTML);
-    }
-  }
-  "<%" {
-    if (yyextra->asp_tags) {
-      tok(T_OPEN_TAG);
-    } else {
-      tok(T_INLINE_HTML);
-    }
-  }
-  "<%=" {
-    if (yyextra->asp_tags) {
-      tok(T_OPEN_TAG_WITH_ECHO);
-    } else {
-      tok(T_INLINE_HTML);
-    }
+    tok(T_OPEN_TAG_WITH_ECHO);
   }
   "<"|[^<]* {
     yy_scan_newlines(yytext, yyg);
@@ -118,14 +88,6 @@ NEWLINE ("\r\n"|"\n"|"\r")
   ("?>"|"</script"{WHITESPACE}*">"){NEWLINE}? {
     yy_scan_newlines(yytext + 2, yyg);
     tok(T_CLOSE_TAG);
-  }
-  "%>" {
-    if (yyextra->asp_tags) {
-      tok(T_CLOSE_TAG);
-    } else {
-      yyless(1);
-      tok(yytext[0]);
-    }
   }
 }
 
@@ -261,6 +223,12 @@ NEWLINE ("\r\n"|"\n"|"\r")
   namespace tok(T_NAMESPACE);
   __namespace__ tok(T_NS_C);
   __dir__ tok(T_DIR);
+  insteadof tok(T_INSTEADOF);
+  callable tok(T_CALLABLE);
+  trait tok(T_TRAIT);
+  __trait__ tok(T_TRAIT_C);
+  yield tok(T_YIELD);
+  finally tok(T_FINALLY);
 }
 
  /* Operators */
@@ -292,24 +260,26 @@ NEWLINE ("\r\n"|"\n"|"\r")
   "=>" tok(T_DOUBLE_ARROW);
   "::" tok(T_PAAMAYIM_NEKUDOTAYIM);
   "\\" tok(T_NS_SEPARATOR);
+  "..." tok(T_ELLIPSIS);
+  "??" tok(T_COALESCE);
+  "<=>" tok(T_SPACESHIP);
 }
 
  /* Casts */
 <PHP,PHP_NO_RESERVED_WORDS,PHP_NO_RESERVED_WORDS_PERSIST>{
   "("{TABS_AND_SPACES}(int|integer){TABS_AND_SPACES}")" tok(T_INT_CAST);
   "("{TABS_AND_SPACES}(real|double|float){TABS_AND_SPACES}")" tok(T_DOUBLE_CAST);
-  "("{TABS_AND_SPACES}string{TABS_AND_SPACES}")" tok(T_STRING_CAST);
-  "("{TABS_AND_SPACES}unicode{TABS_AND_SPACES}")" tok(T_UNICODE_CAST);
-  "("{TABS_AND_SPACES}binary{TABS_AND_SPACES}")" tok(T_BINARY_CAST);
+  "("{TABS_AND_SPACES}(string|binary){TABS_AND_SPACES}")" tok(T_STRING_CAST);
   "("{TABS_AND_SPACES}array{TABS_AND_SPACES}")" tok(T_ARRAY_CAST);
   "("{TABS_AND_SPACES}object{TABS_AND_SPACES}")" tok(T_OBJECT_CAST);
   "("{TABS_AND_SPACES}(bool|boolean){TABS_AND_SPACES}")" tok(T_BOOL_CAST);
   "("{TABS_AND_SPACES}unset{TABS_AND_SPACES}")" tok(T_UNSET_CAST);
 }
 
- /* Scalars (parsing these doesn't really matter since we just pass them through literally) */
+ /* Scalars (parsing these doesn't really matter since we just pass them
+    through literally) */
 <PHP,PHP_NO_RESERVED_WORDS,PHP_NO_RESERVED_WORDS_PERSIST>{
-  {LNUM}|{HNUM} tok(T_LNUMBER);
+  {LNUM}|{HNUM}|{BNUM} tok(T_LNUMBER);
   {DNUM}|{EXPONENT_DNUM} tok(T_DNUMBER);
   {LABEL} tok(T_STRING);
   "$"{LABEL} tok(T_VARIABLE);
@@ -335,7 +305,9 @@ NEWLINE ("\r\n"|"\n"|"\r")
     // yytext will actually start at the "<<<" and not the label. Use of
     // heredoc_yyleng jumps past that. Then we add 1 to get past the " or '. The
     // match is similar to calculate length.
-    yyextra->heredoc_label = string(yytext + yyextra->heredoc_yyleng + 1, yyleng - yyextra->heredoc_yyleng - 2);
+    yyextra->heredoc_label = string(
+      yytext + yyextra->heredoc_yyleng + 1,
+      yyleng - yyextra->heredoc_yyleng - 2);
     set_state(PHP_HEREDOC_NSTART);
     yyextra->heredoc_yyleng = yyleng;
     yymore();
@@ -348,25 +320,23 @@ NEWLINE ("\r\n"|"\n"|"\r")
   }
 }
 <PHP_HEREDOC_NSTART>{NEWLINE} {
-  ++yyextra->lineno;
-  yyextra->heredoc_data = yytext + yyleng;
-  set_state(PHP_HEREDOC_DATA);
+  yyextra->heredoc_yyleng = yyleng;
+  set_state(PHP_HEREDOC_NEWLINE);
   yymore();
-}
-<PHP_HEREDOC_DATA>{
-  [^\r\n]*{NEWLINE} {
-    ++yyextra->lineno;
-    set_state(PHP_HEREDOC_NEWLINE);
-    yyextra->heredoc_yyleng = yyleng;
-    yymore();
-  }
 }
 <PHP_HEREDOC_NEWLINE>{
   {LABEL};?{NEWLINE} {
-    if (strncmp(yyextra->heredoc_label.c_str(), yytext + yyextra->heredoc_yyleng, yyextra->heredoc_label.size()) == 0) {
+    if (strncmp(
+      yyextra->heredoc_label.c_str(),
+      yytext + yyextra->heredoc_yyleng, yyextra->heredoc_label.size()) == 0) {
+
       switch (yytext[yyextra->heredoc_yyleng + yyextra->heredoc_label.size()]) {
         case ';': case '\n': case '\r':
-          yyless(yyleng - (yyleng - yyextra->heredoc_yyleng - yyextra->heredoc_label.size()));
+          yyless(
+            yyleng - (
+              yyleng -
+              yyextra->heredoc_yyleng -
+              yyextra->heredoc_label.size()));
           pop_state();
           tok(T_HEREDOC);
       }
@@ -376,7 +346,6 @@ NEWLINE ("\r\n"|"\n"|"\r")
     yymore();
   }
   [^\r\n]+ {
-    set_state(PHP_HEREDOC_DATA);
     yyextra->heredoc_yyleng = yyleng;
     yymore();
   }
@@ -416,8 +385,6 @@ static const char* yy_state_name(int state) {
       return "PHP_HEREDOC_NSTART";
     case PHP_HEREDOC_NEWLINE:
       return "PHP_HEREDOC_NEWLINE";
-    case PHP_HEREDOC_DATA:
-      return "PHP_HEREDOC_DATA";
     case PHP_NO_RESERVED_WORDS:
       return "PHP_NO_RESERVED_WORDS";
     case PHP_NO_RESERVED_WORDS_PERSIST:
@@ -466,16 +433,7 @@ static int yy_token(int tok, yyguts_t* yyg) {
       break;
 
     case T_PAAMAYIM_NEKUDOTAYIM:
-      if (yyextra->colon_hack) {
-        yyextra->colon_hack = false;
-      } else {
-        push_state(PHP_NO_RESERVED_WORDS);
-      }
-      break;
-
-    case '{':
-      // not used anymore
-      yyextra->curly_stack.push(tok);
+      push_state(PHP_NO_RESERVED_WORDS);
       break;
   }
 #ifdef DEBUG
@@ -499,7 +457,11 @@ static inline void yy_scan_newlines(const char* text, struct yyguts_t* yyg) {
 
 void xhp_new_push_state(int s, struct yyguts_t* yyg) {
 #ifdef DEBUG
-  fprintf(stderr, "--> PUSH(%s -> %s)\n", yy_state_name(YY_START), yy_state_name(s));
+  fprintf(
+    stderr,
+    "--> PUSH(%s -> %s)\n",
+    yy_state_name(YY_START),
+    yy_state_name(s));
 #endif
   yy_push_state(s, yyg);
 }
@@ -510,7 +472,11 @@ void xhp_new_pop_state(struct yyguts_t* yyg) {
 #endif
   yy_pop_state(yyg);
 #ifdef DEBUG
-  fprintf(stderr, "--> POP(%s -> %s)\n", yy_state_name(s), yy_state_name(YY_START));
+  fprintf(
+    stderr,
+    "--> POP(%s -> %s)\n",
+    yy_state_name(s),
+    yy_state_name(YY_START));
 #endif
 }
 

@@ -14,9 +14,8 @@
  * @task path        Paths
  * @task exec        Executables
  * @task assert      Assertions
- * @group filesystem
  */
-final class Filesystem {
+final class Filesystem extends Phobject {
 
 
 /* -(  Files  )-------------------------------------------------------------- */
@@ -43,7 +42,7 @@ final class Filesystem {
     if ($data === false) {
       throw new FilesystemException(
         $path,
-        "Failed to read file `{$path}'.");
+        pht("Failed to read file '%s'.", $path));
     }
 
     return $data;
@@ -92,27 +91,25 @@ final class Filesystem {
     if (@file_put_contents($path, $data) === false) {
       throw new FilesystemException(
         $path,
-        "Failed to write file `{$path}'.");
+        pht("Failed to write file '%s'.", $path));
     }
   }
 
   /**
-   * Write a file in a manner similar to file_put_contents(), but only
-   * touch the file if the contents are different, and throw detailed
-   * exceptions on failure.
+   * Write a file in a manner similar to `file_put_contents()`, but only touch
+   * the file if the contents are different, and throw detailed exceptions on
+   * failure.
    *
-   * As this function is used in build steps to update code, if we write
-   * a new file, we do so by writing to a temporary file and moving it
-   * into place.  This allows a concurrently reading process to see
-   * a consistent view of the file without needing locking; any given
-   * read of the file is guaranteed to be self-consistent and not see
-   * partial file contents.
+   * As this function is used in build steps to update code, if we write a new
+   * file, we do so by writing to a temporary file and moving it into place.
+   * This allows a concurrently reading process to see a consistent view of the
+   * file without needing locking; any given read of the file is guaranteed to
+   * be self-consistent and not see partial file contents.
    *
    * @param string file path to write
    * @param string data to write
    *
-   * @return boolean indicating whether the file was changed by this
-   * function
+   * @return boolean indicating whether the file was changed by this function.
    */
   public static function writeFileIfChanged($path, $data) {
     if (file_exists($path)) {
@@ -130,8 +127,7 @@ final class Filesystem {
     if (!$temp) {
       throw new FilesystemException(
         $dir,
-        "unable to create temporary file in $dir"
-      );
+        pht('Unable to create temporary file in %s.', $dir));
     }
     try {
       self::writeFile($temp, $data);
@@ -143,8 +139,7 @@ final class Filesystem {
       if (!$ok) {
         throw new FilesystemException(
           $path,
-          "unable to move $temp to $path"
-        );
+          pht('Unable to move %s to %s.', $temp, $path));
       }
     } catch (Exception $e) {
       // Make best effort to remove temp file
@@ -173,7 +168,7 @@ final class Filesystem {
    * @task file
    */
   public static function writeUniqueFile($base, $data) {
-    $full_path = Filesystem::resolvePath($base);
+    $full_path = self::resolvePath($base);
     $sequence = 0;
     assert_stringlike($data);
     // Try 'file', 'file.1', 'file.2', etc., until something doesn't exist.
@@ -190,14 +185,14 @@ final class Filesystem {
         if ($ok === false) {
           throw new FilesystemException(
             $try_path,
-            pht("Failed to write file data."));
+            pht('Failed to write file data.'));
         }
 
         $ok = fclose($handle);
         if (!$ok) {
           throw new FilesystemException(
             $try_path,
-            pht("Failed to close file handle."));
+            pht('Failed to close file handle.'));
         }
 
         return $try_path;
@@ -238,18 +233,45 @@ final class Filesystem {
 
     if (($fh = fopen($path, 'a')) === false) {
       throw new FilesystemException(
-        $path, "Failed to open file `{$path}'.");
+        $path,
+        pht("Failed to open file '%s'.", $path));
     }
     $dlen = strlen($data);
     if (fwrite($fh, $data) !== $dlen) {
       throw new FilesystemException(
         $path,
-        "Failed to write {$dlen} bytes to `{$path}'.");
+        pht("Failed to write %d bytes to '%s'.", $dlen, $path));
     }
     if (!fflush($fh) || !fclose($fh)) {
       throw new FilesystemException(
         $path,
-        "Failed closing file `{$path}' after write.");
+        pht("Failed closing file '%s' after write.", $path));
+    }
+  }
+
+
+  /**
+   * Copy a file, preserving file attributes (if relevant for the OS).
+   *
+   * @param string  File path to copy from.  This file must exist and be
+   *                readable, or an exception will be thrown.
+   * @param string  File path to copy to.  If a file exists at this path
+   *                already, it wll be overwritten.
+   *
+   * @task  file
+   */
+  public static function copyFile($from, $to) {
+    $from = self::resolvePath($from);
+    $to   = self::resolvePath($to);
+
+    self::assertExists($from);
+    self::assertIsFile($from);
+    self::assertReadable($from);
+
+    if (phutil_is_windows()) {
+      execx('copy /Y %s %s', $from, $to);
+    } else {
+      execx('cp -p %s %s', $from, $to);
     }
   }
 
@@ -265,7 +287,10 @@ final class Filesystem {
   public static function remove($path) {
     if (!strlen($path)) {
       // Avoid removing PWD.
-      throw new Exception("No path provided to remove().");
+      throw new Exception(
+        pht(
+          'No path provided to %s.',
+          __FUNCTION__.'()'));
     }
 
     $path = self::resolvePath($path);
@@ -295,7 +320,7 @@ final class Filesystem {
     if (!$ok) {
       throw new FilesystemException(
         $new,
-        "Failed to rename '{$old}' to '{$new}'!");
+        pht("Failed to rename '%s' to '%s'!", $old, $new));
     }
   }
 
@@ -311,21 +336,21 @@ final class Filesystem {
    */
   private static function executeRemovePath($path) {
     if (is_dir($path) && !is_link($path)) {
-      foreach (Filesystem::listDirectory($path, true) as $child) {
+      foreach (self::listDirectory($path, true) as $child) {
         self::executeRemovePath($path.DIRECTORY_SEPARATOR.$child);
       }
       $ok = rmdir($path);
       if (!$ok) {
          throw new FilesystemException(
           $path,
-          "Failed to remove directory '{$path}'!");
+          pht("Failed to remove directory '%s'!", $path));
       }
     } else {
       $ok = unlink($path);
       if (!$ok) {
         throw new FilesystemException(
           $path,
-          "Failed to remove file '{$path}'!");
+          pht("Failed to remove file '%s'!", $path));
       }
     }
   }
@@ -347,9 +372,10 @@ final class Filesystem {
     self::assertExists($path);
 
     if (!@chmod($path, $umask)) {
-      $readable_umask = sprintf("%04o", $umask);
+      $readable_umask = sprintf('%04o', $umask);
       throw new FilesystemException(
-        $path, "Failed to chmod `{$path}' to `{$readable_umask}'.");
+        $path,
+        pht("Failed to chmod '%s' to '%s'.", $path, $readable_umask));
     }
   }
 
@@ -358,7 +384,7 @@ final class Filesystem {
    * Get the last modified time of a file
    *
    * @param string Path to file
-   * @return Time last modified
+   * @return int Time last modified
    *
    * @task file
    */
@@ -373,7 +399,7 @@ final class Filesystem {
     if ($modified_time === false) {
       throw new FilesystemException(
         $path,
-        'Failed to read modified time for '.$path);
+        pht('Failed to read modified time for %s.', $path));
     }
 
     return $modified_time;
@@ -388,43 +414,92 @@ final class Filesystem {
    * @return  string  Random bytestring of the provided length.
    *
    * @task file
-   *
-   * @phutil-external-symbol class COM
    */
   public static function readRandomBytes($number_of_bytes) {
-
-    if (phutil_is_windows()) {
-      if (!function_exists('openssl_random_pseudo_bytes')) {
-        if (version_compare(PHP_VERSION, '5.3.0') < 0) {
-          throw new Exception(
-            'Filesystem::readRandomBytes() requires at least PHP 5.3 under '.
-            'Windows.');
-        }
-        throw new Exception(
-          'Filesystem::readRandomBytes() requires OpenSSL extension under '.
-          'Windows.');
-      }
-      $strong = true;
-      return openssl_random_pseudo_bytes($number_of_bytes, $strong);
+    $number_of_bytes = (int)$number_of_bytes;
+    if ($number_of_bytes < 1) {
+      throw new Exception(pht('You must generate at least 1 byte of entropy.'));
     }
+
+    // Under PHP 7.2.0 and newer, we have a reasonable builtin. For older
+    // versions, we fall back to various sources which have a roughly similar
+    // effect.
+    if (function_exists('random_bytes')) {
+      return random_bytes($number_of_bytes);
+    }
+
+    // Try to use `openssl_random_pseudo_bytes()` if it's available. This source
+    // is the most widely available source, and works on Windows/Linux/OSX/etc.
+
+    if (function_exists('openssl_random_pseudo_bytes')) {
+      $strong = true;
+      $data = openssl_random_pseudo_bytes($number_of_bytes, $strong);
+
+      if (!$strong) {
+        // NOTE: This indicates we're using a weak random source. This is
+        // probably OK, but maybe we should be more strict here.
+      }
+
+      if ($data === false) {
+        throw new Exception(
+          pht(
+            '%s failed to generate entropy!',
+            'openssl_random_pseudo_bytes()'));
+      }
+
+      if (strlen($data) != $number_of_bytes) {
+        throw new Exception(
+          pht(
+            '%s returned an unexpected number of bytes (got %s, expected %s)!',
+            'openssl_random_pseudo_bytes()',
+            new PhutilNumber(strlen($data)),
+            new PhutilNumber($number_of_bytes)));
+      }
+
+      return $data;
+    }
+
+
+    // Try to use `/dev/urandom` if it's available. This is usually available
+    // on non-Windows systems, but some PHP config (open_basedir) and chrooting
+    // may limit our access to it.
 
     $urandom = @fopen('/dev/urandom', 'rb');
-    if (!$urandom) {
-      throw new FilesystemException(
-        '/dev/urandom',
-        'Failed to open /dev/urandom for reading!');
+    if ($urandom) {
+      $data = @fread($urandom, $number_of_bytes);
+      @fclose($urandom);
+      if (strlen($data) != $number_of_bytes) {
+        throw new FilesystemException(
+          '/dev/urandom',
+          pht('Failed to read random bytes!'));
+      }
+      return $data;
     }
 
-    $data = @fread($urandom, $number_of_bytes);
-    if (strlen($data) != $number_of_bytes) {
-      throw new FilesystemException(
-        '/dev/urandom',
-        'Failed to read random bytes!');
+    // (We might be able to try to generate entropy here from a weaker source
+    // if neither of the above sources panned out, see some discussion in
+    // T4153.)
+
+    // We've failed to find any valid entropy source. Try to fail in the most
+    // useful way we can, based on the platform.
+
+    if (phutil_is_windows()) {
+      throw new Exception(
+        pht(
+          '%s requires the PHP OpenSSL extension to be installed and enabled '.
+          'to access an entropy source. On Windows, this extension is usually '.
+          'installed but not enabled by default. Enable it in your "s".',
+          __METHOD__.'()',
+          'php.ini'));
     }
 
-    @fclose($urandom);
-
-    return $data;
+    throw new Exception(
+      pht(
+        '%s requires the PHP OpenSSL extension or access to "%s". Install or '.
+        'enable the OpenSSL extension, or make sure "%s" is accessible.',
+        __METHOD__.'()',
+        '/dev/urandom',
+        '/dev/urandom'));
   }
 
 
@@ -456,6 +531,56 @@ final class Filesystem {
     $bytes = self::readRandomBytes($number_of_characters);
     for ($ii = 0; $ii < $number_of_characters; $ii++) {
       $result .= $map[ord($bytes[$ii]) >> 3];
+    }
+
+    return $result;
+  }
+
+
+  /**
+   * Generate a random integer value in a given range.
+   *
+   * This method uses less-entropic random sources under older versions of PHP.
+   *
+   * @param int Minimum value, inclusive.
+   * @param int Maximum value, inclusive.
+   */
+  public static function readRandomInteger($min, $max) {
+    if (!is_int($min)) {
+      throw new Exception(pht('Minimum value must be an integer.'));
+    }
+
+    if (!is_int($max)) {
+      throw new Exception(pht('Maximum value must be an integer.'));
+    }
+
+    if ($min > $max) {
+      throw new Exception(
+        pht(
+          'Minimum ("%d") must not be greater than maximum ("%d").',
+          $min,
+          $max));
+    }
+
+    // Under PHP 7.2.0 and newer, we can just use "random_int()". This function
+    // is intended to generate cryptographically usable entropy.
+    if (function_exists('random_int')) {
+      return random_int($min, $max);
+    }
+
+    // We could find a stronger source for this, but correctly converting raw
+    // bytes to an integer range without biases is fairly hard and it seems
+    // like we're more likely to get that wrong than suffer a PRNG prediction
+    // issue by falling back to "mt_rand()".
+
+    if (($max - $min) > mt_getrandmax()) {
+      throw new Exception(
+        pht('mt_rand() range is smaller than the requested range.'));
+    }
+
+    $result = mt_rand($min, $max);
+    if (!is_int($result)) {
+      throw new Exception(pht('Bad return value from mt_rand().'));
     }
 
     return $result;
@@ -550,19 +675,23 @@ final class Filesystem {
    * @param  string    Path to directory. The parent directory must exist and
    *                   be writable.
    * @param  int       Permission umask. Note that umask is in octal, so you
-   *                   should specify it as, e.g., `0777', not `777'. By
-   *                   default, these permissions are very liberal (0777).
-   * @param  boolean   Recursivly create directories.  Default to false
+   *                   should specify it as, e.g., `0777', not `777'.
+   * @param  boolean   Recursively create directories. Default to false.
    * @return string    Path to the created directory.
    *
    * @task   directory
    */
-  public static function createDirectory($path, $umask = 0777,
-                                            $recursive = false) {
+  public static function createDirectory(
+    $path,
+    $umask = 0755,
+    $recursive = false) {
+
     $path = self::resolvePath($path);
 
     if (is_dir($path)) {
-      Filesystem::changePermissions($path, $umask);
+      if ($umask) {
+        self::changePermissions($path, $umask);
+      }
       return $path;
     }
 
@@ -581,15 +710,17 @@ final class Filesystem {
     if (!mkdir($path, $umask)) {
       throw new FilesystemException(
         $path,
-        "Failed to create directory `{$path}'.");
+        pht("Failed to create directory '%s'.", $path));
     }
 
-    // Need to change premissions explicitly because mkdir does something
+    // Need to change permissions explicitly because mkdir does something
     // slightly different. mkdir(2) man page:
     // 'The parameter mode specifies the permissions to use. It is modified by
     // the process's umask in the usual way: the permissions of the created
     // directory are (mode & ~umask & 0777)."'
-    Filesystem::changePermissions($path, $umask);
+    if ($umask) {
+      self::changePermissions($path, $umask);
+    }
 
     return $path;
   }
@@ -603,17 +734,30 @@ final class Filesystem {
    * @param  string    Optional directory prefix.
    * @param  int       Permissions to create the directory with. By default,
    *                   these permissions are very restrictive (0700).
+   * @param  string    Optional root directory. If not provided, the system
+   *                   temporary directory (often "/tmp") will be used.
    * @return string    Path to newly created temporary directory.
    *
    * @task   directory
    */
-  public static function createTemporaryDirectory($prefix = '', $umask = 0700) {
+  public static function createTemporaryDirectory(
+    $prefix = '',
+    $umask = 0700,
+    $root_directory = null) {
     $prefix = preg_replace('/[^A-Z0-9._-]+/i', '', $prefix);
 
-    $tmp = sys_get_temp_dir();
-    if (!$tmp) {
-      throw new FilesystemException(
-        $tmp, 'Unable to determine system temporary directory.');
+    if ($root_directory !== null) {
+      $tmp = $root_directory;
+      self::assertExists($tmp);
+      self::assertIsDirectory($tmp);
+      self::assertWritable($tmp);
+    } else {
+      $tmp = sys_get_temp_dir();
+      if (!$tmp) {
+        throw new FilesystemException(
+          $tmp,
+          pht('Unable to determine system temporary directory.'));
+      }
     }
 
     $base = $tmp.DIRECTORY_SEPARATOR.$prefix;
@@ -625,20 +769,21 @@ final class Filesystem {
         self::createDirectory($dir, $umask);
         break;
       } catch (FilesystemException $ex) {
-        //  Ignore.
+        // Ignore.
       }
     } while (--$tries);
 
     if (!$tries) {
-
       $df = disk_free_space($tmp);
       if ($df !== false && $df < 1024 * 1024) {
         throw new FilesystemException(
-          $dir, "Failed to create a temporary directory: the disk is full.");
+          $dir,
+          pht('Failed to create a temporary directory: the disk is full.'));
       }
 
       throw new FilesystemException(
-        $dir, "Failed to create a temporary directory.");
+        $dir,
+        pht("Failed to create a temporary directory in '%s'.", $tmp));
     }
 
     return $dir;
@@ -667,7 +812,7 @@ final class Filesystem {
     if ($list === false) {
       throw new FilesystemException(
         $path,
-        "Unable to list contents of directory `{$path}'.");
+        pht("Unable to list contents of directory '%s'.", $path));
     }
 
     foreach ($list as $k => $v) {
@@ -681,18 +826,44 @@ final class Filesystem {
 
 
   /**
-   * Return all directories between a path and "/". Iterating over them walks
-   * from the path to the root.
+   * Return all directories between a path and the specified root directory
+   * (defaulting to "/"). Iterating over them walks from the path to the root.
    *
-   * @param  string Path, absolute or relative to PWD.
-   * @return list   List of parent paths, including the provided path.
+   * @param  string        Path, absolute or relative to PWD.
+   * @param  string        The root directory.
+   * @return list<string>  List of parent paths, including the provided path.
    * @task   directory
    */
-  public static function walkToRoot($path) {
+  public static function walkToRoot($path, $root = null) {
     $path = self::resolvePath($path);
 
     if (is_link($path)) {
       $path = realpath($path);
+    }
+
+    // NOTE: On Windows, paths start like "C:\", so "/" does not contain
+    // every other path. We could possibly special case "/" to have the same
+    // meaning on Windows that it does on Linux, but just special case the
+    // common case for now. See PHI817.
+    if ($root !== null) {
+      $root = self::resolvePath($root);
+
+      if (is_link($root)) {
+        $root = realpath($root);
+      }
+
+      // NOTE: We don't use `isDescendant()` here because we don't want to
+      // reject paths which don't exist on disk.
+      $root_list = new FileList(array($root));
+      if (!$root_list->contains($path)) {
+        return array();
+      }
+    } else {
+      if (phutil_is_windows()) {
+        $root = null;
+      } else {
+        $root = '/';
+      }
     }
 
     $walk = array();
@@ -702,17 +873,25 @@ final class Filesystem {
         unset($parts[$k]);
       }
     }
-    do {
+
+    while (true) {
       if (phutil_is_windows()) {
-        $walk[] = implode(DIRECTORY_SEPARATOR, $parts);
+        $next = implode(DIRECTORY_SEPARATOR, $parts);
       } else {
-        $walk[] = DIRECTORY_SEPARATOR.implode(DIRECTORY_SEPARATOR, $parts);
+        $next = DIRECTORY_SEPARATOR.implode(DIRECTORY_SEPARATOR, $parts);
       }
-      if (empty($parts)) {
+
+      $walk[] = $next;
+      if ($next == $root) {
         break;
       }
+
+      if (!$parts) {
+        break;
+      }
+
       array_pop($parts);
-    } while (true);
+    }
 
     return $walk;
   }
@@ -720,6 +899,20 @@ final class Filesystem {
 
 /* -(  Paths  )-------------------------------------------------------------- */
 
+
+  /**
+   * Checks if a path is specified as an absolute path.
+   *
+   * @param  string
+   * @return bool
+   */
+  public static function isAbsolutePath($path) {
+    if (phutil_is_windows()) {
+      return (bool)preg_match('/^[A-Za-z]+:/', $path);
+    } else {
+      return !strncmp($path, DIRECTORY_SEPARATOR, 1);
+    }
+  }
 
   /**
    * Canonicalize a path by resolving it relative to some directory (by
@@ -732,11 +925,7 @@ final class Filesystem {
    * @task   path
    */
   public static function resolvePath($path, $relative_to = null) {
-    if (phutil_is_windows()) {
-      $is_absolute = preg_match('/^[A-Za-z]+:/', $path);
-    } else {
-      $is_absolute = !strncmp($path, DIRECTORY_SEPARATOR, 1);
-    }
+    $is_absolute = self::isAbsolutePath($path);
 
     if (!$is_absolute) {
       if (!$relative_to) {
@@ -791,7 +980,6 @@ final class Filesystem {
    * @task   path
    */
   public static function isDescendant($path, $root) {
-
     try {
       self::assertExists($path);
       self::assertExists($root);
@@ -870,7 +1058,13 @@ final class Filesystem {
     if (phutil_is_windows()) {
       list($err, $stdout) = exec_manual('where %s', $binary);
       $stdout = phutil_split_lines($stdout);
-      if (!$stdout) {
+
+      // If `where %s` could not find anything, check for relative binary
+      if ($err) {
+        $path = self::resolvePath($binary);
+        if (self::pathExists($path)) {
+          return $path;
+        }
         return null;
       }
       $stdout = head($stdout);
@@ -895,8 +1089,8 @@ final class Filesystem {
    * @task path
    */
   public static function pathsAreEquivalent($u, $v) {
-    $u = Filesystem::resolvePath($u);
-    $v = Filesystem::resolvePath($v);
+    $u = self::resolvePath($u);
+    $v = self::resolvePath($v);
 
     $real_u = realpath($u);
     $real_v = realpath($v);
@@ -924,11 +1118,46 @@ final class Filesystem {
    * @task   assert
    */
   public static function assertExists($path) {
-    if (!self::pathExists($path)) {
-      throw new FilesystemException(
-        $path,
-        "Filesystem entity `{$path}' does not exist.");
+    if (self::pathExists($path)) {
+      return;
     }
+
+    // Before we claim that the path doesn't exist, try to find a parent we
+    // don't have "+x" on. If we find one, tailor the error message so we don't
+    // say "does not exist" in cases where the path does exist, we just don't
+    // have permission to test its existence.
+    foreach (self::walkToRoot($path) as $parent) {
+      if (!self::pathExists($parent)) {
+        continue;
+      }
+
+      if (!is_dir($parent)) {
+        continue;
+      }
+
+      if (phutil_is_windows()) {
+        // Do nothing. On Windows, there's no obvious equivalent to the
+        // check below because "is_executable(...)" always appears to return
+        // "false" for any directory.
+      } else if (!is_executable($parent)) {
+        // On Linux, note that we don't need read permission ("+r") on parent
+        // directories to determine that a path exists, only execute ("+x").
+        throw new FilesystemException(
+          $path,
+          pht(
+            'Filesystem path "%s" can not be accessed because a parent '.
+            'directory ("%s") is not executable (the current process does '.
+            'not have "+x" permission).',
+            $path,
+            $parent));
+      }
+    }
+
+    throw new FilesystemException(
+      $path,
+      pht(
+        'Filesystem path "%s" does not exist.',
+        $path));
   }
 
 
@@ -944,7 +1173,7 @@ final class Filesystem {
     if (file_exists($path) || is_link($path)) {
       throw new FilesystemException(
         $path,
-        "Path `{$path}' already exists!");
+        pht("Path '%s' already exists!", $path));
     }
   }
 
@@ -961,7 +1190,7 @@ final class Filesystem {
     if (!is_file($path)) {
       throw new FilesystemException(
         $path,
-        "Requested path `{$path}' is not a file.");
+        pht("Requested path '%s' is not a file.", $path));
     }
   }
 
@@ -978,7 +1207,7 @@ final class Filesystem {
     if (!is_dir($path)) {
       throw new FilesystemException(
         $path,
-        "Requested path `{$path}' is not a directory.");
+        pht("Requested path '%s' is not a directory.", $path));
     }
   }
 
@@ -995,7 +1224,7 @@ final class Filesystem {
     if (!is_writable($path)) {
       throw new FilesystemException(
         $path,
-        "Requested path `{$path}' is not writable.");
+        pht("Requested path '%s' is not writable.", $path));
     }
   }
 
@@ -1012,9 +1241,8 @@ final class Filesystem {
     if (!is_readable($path)) {
       throw new FilesystemException(
         $path,
-        "Path `{$path}' is not readable.");
+        pht("Path '%s' is not readable.", $path));
     }
   }
 
 }
-

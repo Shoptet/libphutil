@@ -17,7 +17,6 @@
  * @task config Configuring the Request
  * @task resolve Resolving the Request
  * @task internal Internals
- * @group futures
  */
 abstract class BaseHTTPFuture extends Future {
 
@@ -97,10 +96,12 @@ abstract class BaseHTTPFuture extends Future {
     );
 
     if (empty($supported_methods[$method])) {
-      $method_list = implode(', ', array_keys($supported_methods));
       throw new Exception(
-        "The HTTP method '{$method}' is not supported. Supported HTTP methods ".
-        "are: {$method_list}.");
+        pht(
+          "The HTTP method '%s' is not supported. Supported HTTP methods ".
+          "are: %s.",
+          $method,
+          implode(', ', array_keys($supported_methods))));
     }
 
     $this->method = $method;
@@ -156,7 +157,7 @@ abstract class BaseHTTPFuture extends Future {
    */
   public function setData($data) {
     if (!is_string($data) && !is_array($data)) {
-      throw new Exception("Data parameter must be an array or string.");
+      throw new Exception(pht('Data parameter must be an array or string.'));
     }
     $this->data = $data;
     return $this;
@@ -221,7 +222,7 @@ abstract class BaseHTTPFuture extends Future {
   /**
    * Set the status codes that are expected in the response.
    * If set, isError on the status object will return true for status codes
-   * that are not in the input array. Otherise, isError will be true for any
+   * that are not in the input array. Otherwise, isError will be true for any
    * HTTP status code outside the 2xx range (notwithstanding other errors such
    * as connection or transport issues).
    *
@@ -245,12 +246,43 @@ abstract class BaseHTTPFuture extends Future {
   }
 
 
+  /**
+   * Add a HTTP basic authentication header to the request.
+   *
+   * @param string                Username to authenticate with.
+   * @param PhutilOpaqueEnvelope  Password to authenticate with.
+   * @return this
+   * @task config
+   */
+  public function setHTTPBasicAuthCredentials(
+    $username,
+    PhutilOpaqueEnvelope $password) {
+
+    $password_plaintext = $password->openEnvelope();
+    $credentials = base64_encode($username.':'.$password_plaintext);
+
+    return $this->addHeader('Authorization', 'Basic '.$credentials);
+  }
+
+  public function getHTTPRequestByteLength() {
+    // NOTE: This isn't very accurate, but it's only used by the "--trace"
+    // call profiler to help pick out huge requests.
+    $data = $this->getData();
+
+    if (is_scalar($data)) {
+      return strlen($data);
+    }
+
+    return strlen(phutil_build_http_querystring($data));
+  }
+
+
 /* -(  Resolving the Request  )---------------------------------------------- */
 
 
   /**
-   * Exception-oriented resolve(). Throws if the status indicates an error
-   * occurred.
+   * Exception-oriented @{method:resolve}. Throws if the status indicates an
+   * error occurred.
    *
    * @return tuple  HTTP request result <body, headers> tuple.
    * @task resolve
@@ -279,7 +311,7 @@ abstract class BaseHTTPFuture extends Future {
    */
   protected function parseRawHTTPResponse($raw_response) {
     $rex_base = "@^(?P<head>.*?)\r?\n\r?\n(?P<body>.*)$@s";
-    $rex_head = "@^HTTP/\S+ (?P<code>\d+) (?P<status>.*?)".
+    $rex_head = "@^HTTP/\S+ (?P<code>\d+) ?(?P<status>.*?)".
                 "(?:\r?\n(?P<headers>.*))?$@s";
 
     // We need to parse one or more header blocks in case we got any
@@ -316,7 +348,7 @@ abstract class BaseHTTPFuture extends Future {
       }
     }
 
-    $status = new HTTPFutureResponseStatusHTTP(
+    $status = new HTTPFutureHTTPResponseStatus(
       $response_code,
       $body,
       $headers,
@@ -386,9 +418,10 @@ abstract class BaseHTTPFuture extends Future {
     $body = null;
     $headers = array();
 
-    $status = new HTTPFutureResponseStatusParse(
-      HTTPFutureResponseStatusParse::ERROR_MALFORMED_RESPONSE,
+    $status = new HTTPFutureParseResponseStatus(
+      HTTPFutureParseResponseStatus::ERROR_MALFORMED_RESPONSE,
       $raw_response);
     return array($status, $body, $headers);
   }
+
 }

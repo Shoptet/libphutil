@@ -13,10 +13,8 @@
  * Note that these URIs can not be transformed into normal URIs because the
  * path is interpreted as relative on the remote, rather than absolute (as with
  * normal URIs).
- *
- * @group util
  */
-final class PhutilGitURI {
+final class PhutilGitURI extends Phobject {
 
   private $user;
   private $domain;
@@ -32,6 +30,12 @@ final class PhutilGitURI {
   }
 
   private static function parseURI($uri) {
+    // See T4913. Fail the parse if there is leading whitespace; stricter
+    // systems will not accept these URIs.
+    if (ltrim($uri) !== $uri) {
+      return null;
+    }
+
     $user   = '(?:([^@]+)@)?';
     $domain = '([^:]+)';
     $path   = ':(.*)';
@@ -86,4 +90,3 @@ final class PhutilGitURI {
   }
 
 }
-

@@ -16,8 +16,6 @@
  *     fopen('php://stdout', 'w'));
  *
  * @task construct Construction
- *
- * @group channel
  */
 final class PhutilSocketChannel extends PhutilChannel {
 
@@ -42,6 +40,7 @@ final class PhutilSocketChannel extends PhutilChannel {
    * @task construct
    */
   public function __construct($read_socket, $write_socket = null) {
+    parent::__construct();
 
     foreach (array($read_socket, $write_socket) as $socket) {
       if (!$socket) {
@@ -49,7 +48,7 @@ final class PhutilSocketChannel extends PhutilChannel {
       }
       $ok = stream_set_blocking($socket, false);
       if (!$ok) {
-        throw new Exception("Failed to set socket nonblocking!");
+        throw new Exception(pht('Failed to set socket nonblocking!'));
       }
     }
 
@@ -81,7 +80,7 @@ final class PhutilSocketChannel extends PhutilChannel {
     $domain = phutil_is_windows() ? STREAM_PF_INET : STREAM_PF_UNIX;
     $pair = stream_socket_pair($domain, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
     if (!$pair) {
-      throw new Exception("stream_socket_pair() failed!");
+      throw new Exception(pht('%s failed!', 'stream_socket_pair()'));
     }
 
     $x = new PhutilSocketChannel($pair[0]);
@@ -102,13 +101,13 @@ final class PhutilSocketChannel extends PhutilChannel {
     return (bool)$this->writeSocket;
   }
 
-  protected function readBytes() {
+  protected function readBytes($length) {
     $socket = $this->readSocket;
     if (!$socket) {
       return '';
     }
 
-    $data = @fread($socket, 4096);
+    $data = @fread($socket, min($length, 64 * 1024));
 
     if ($data === false) {
       $this->closeReadSocket();
@@ -132,7 +131,7 @@ final class PhutilSocketChannel extends PhutilChannel {
       return 0;
     }
 
-    $len = @fwrite($socket, $bytes);
+    $len = phutil_fwrite_nonblocking_stream($socket, $bytes);
     if ($len === false) {
       $this->closeWriteSocket();
       return 0;
@@ -148,9 +147,7 @@ final class PhutilSocketChannel extends PhutilChannel {
   }
 
   protected function getWriteSockets() {
-    if ($this->isWriteBufferEmpty()) {
-      return array();
-    } else if ($this->writeSocket) {
+    if ($this->writeSocket) {
       return array($this->writeSocket);
     } else {
       return array();
@@ -171,6 +168,10 @@ final class PhutilSocketChannel extends PhutilChannel {
     if ($this->isSingleSocket) {
       $this->readSocket = null;
     }
+  }
+
+  public function closeWriteChannel() {
+    $this->closeWriteSocket();
   }
 
   private function closeOneSocket($socket) {

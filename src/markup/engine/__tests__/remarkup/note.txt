@@ -1,5 +1,0 @@
-NOTE: interesting **stuff**
-~~~~~~~~~~
-<div class="remarkup-note">NOTE: interesting <strong>stuff</strong></div>
-~~~~~~~~~~
-NOTE: interesting **stuff**
